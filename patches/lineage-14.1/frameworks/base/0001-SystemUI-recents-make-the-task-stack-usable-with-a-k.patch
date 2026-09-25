@@ -1,0 +1,157 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 12:00:00 +0300
+Subject: [PATCH] SystemUI: recents: make the task stack usable with a keypad
+
+On devices without a touch panel no task view had focus after opening
+recents, so OK had no target and the focus was not shown; DOWN moved to
+the older task drawn above; and a long OK acted like a short one.
+
+Give the initial task view focus when there is no touchscreen, follow
+the stack direction on such devices, draw a frame around the focused
+task, and handle OK in RecentsActivity: released it opens the focused
+task, held it dismisses it.
+---
+ .../recents_task_view_focus_highlight.xml     | 11 ++++++
+ .../SystemUI/res/layout/recents_task_view.xml |  3 +-
+ .../systemui/recents/RecentsActivity.java     | 38 +++++++++++++++++++
+ .../systemui/recents/views/TaskStackView.java | 20 +++++++---
+ 4 files changed, 66 insertions(+), 6 deletions(-)
+ create mode 100644 packages/SystemUI/res/drawable/recents_task_view_focus_highlight.xml
+
+diff --git a/packages/SystemUI/res/drawable/recents_task_view_focus_highlight.xml b/packages/SystemUI/res/drawable/recents_task_view_focus_highlight.xml
+new file mode 100644
+index 00000000000..aecc6c51492
+--- /dev/null
++++ b/packages/SystemUI/res/drawable/recents_task_view_focus_highlight.xml
+@@ -0,0 +1,11 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- Frame around the task that has the D-pad focus; the default focus highlight is too faint on
++     the dark thumbnails. -->
++<selector xmlns:android="http://schemas.android.com/apk/res/android">
++    <item android:state_focused="true">
++        <shape android:shape="rectangle">
++            <stroke android:width="3dp" android:color="?android:attr/colorAccent" />
++            <corners android:radius="@dimen/recents_task_view_rounded_corners_radius" />
++        </shape>
++    </item>
++</selector>
+diff --git a/packages/SystemUI/res/layout/recents_task_view.xml b/packages/SystemUI/res/layout/recents_task_view.xml
+index 015e4a2006b..b4052276628 100644
+--- a/packages/SystemUI/res/layout/recents_task_view.xml
++++ b/packages/SystemUI/res/layout/recents_task_view.xml
+@@ -17,7 +17,8 @@
+     xmlns:android="http://schemas.android.com/apk/res/android"
+     android:layout_width="match_parent"
+     android:layout_height="match_parent"
+-    android:focusable="true">
++    android:focusable="true"
++    android:foreground="@drawable/recents_task_view_focus_highlight">
+     <com.android.systemui.recents.views.TaskViewThumbnail
+         android:id="@+id/task_view_thumbnail"
+         android:layout_width="match_parent"
+diff --git a/packages/SystemUI/src/com/android/systemui/recents/RecentsActivity.java b/packages/SystemUI/src/com/android/systemui/recents/RecentsActivity.java
+index 764397b9388..6df356baaac 100644
+--- a/packages/SystemUI/src/com/android/systemui/recents/RecentsActivity.java
++++ b/packages/SystemUI/src/com/android/systemui/recents/RecentsActivity.java
+@@ -569,9 +569,26 @@ public class RecentsActivity extends Activity implements ViewTreeObserver.OnPreD
+         }
+     }
+ 
++    @Override
++    public boolean dispatchKeyEvent(KeyEvent event) {
++        // OK opens the focused task when released and dismisses it when held (keypad phones
++        // without a touch panel). Take it before the focused task view, which would click on
++        // every press and knows no long press.
++        final int keyCode = event.getKeyCode();
++        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
++            onUserInteraction();
++            return event.dispatch(this, getWindow().getDecorView().getKeyDispatcherState(), this);
++        }
++        return super.dispatchKeyEvent(event);
++    }
++
+     @Override
+     public boolean onKeyDown(int keyCode, KeyEvent event) {
+         switch (keyCode) {
++            case KeyEvent.KEYCODE_DPAD_CENTER:
++            case KeyEvent.KEYCODE_ENTER:
++                event.startTracking();
++                return true;
+             case KeyEvent.KEYCODE_TAB: {
+                 int altTabKeyDelay = getResources().getInteger(R.integer.recents_alt_tab_key_delay);
+                 boolean hasRepKeyTimeElapsed = (SystemClock.elapsedRealtime() -
+@@ -619,6 +636,27 @@ public class RecentsActivity extends Activity implements ViewTreeObserver.OnPreD
+         return super.onKeyDown(keyCode, event);
+     }
+ 
++    @Override
++    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
++        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
++            EventBus.getDefault().send(new DismissFocusedTaskViewEvent());
++            return true;
++        }
++        return super.onKeyLongPress(keyCode, event);
++    }
++
++    @Override
++    public boolean onKeyUp(int keyCode, KeyEvent event) {
++        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
++            // A handled long press cancels the up.
++            if (event.isTracking() && !event.isCanceled()) {
++                mRecentsView.launchFocusedTask(0 /* logEvent */);
++            }
++            return true;
++        }
++        return super.onKeyUp(keyCode, event);
++    }
++
+     @Override
+     public void onUserInteraction() {
+         EventBus.getDefault().send(mUserInteractionEvent);
+diff --git a/packages/SystemUI/src/com/android/systemui/recents/views/TaskStackView.java b/packages/SystemUI/src/com/android/systemui/recents/views/TaskStackView.java
+index 37fec65092d..3cf7cc43ac6 100644
+--- a/packages/SystemUI/src/com/android/systemui/recents/views/TaskStackView.java
++++ b/packages/SystemUI/src/com/android/systemui/recents/views/TaskStackView.java
+@@ -1889,13 +1889,20 @@ public class TaskStackView extends FrameLayout implements TaskStack.TaskStackCal
+                     currentIndex, event.direction);
+             setFocusedTask(nextIndex, false, true);
+         } else {
++            // "Next" is the older task, which the stack shows above the focused one. Keypad
++            // phones without a touch panel move the focus the way the keys point.
++            final boolean olderIsUp = getResources().getConfiguration().touchscreen
++                    == Configuration.TOUCHSCREEN_NOTOUCH;
+             switch (event.direction) {
+                 case UP:
+-                    EventBus.getDefault().send(new FocusPreviousTaskViewEvent());
++                    EventBus.getDefault().send(olderIsUp
++                            ? new FocusNextTaskViewEvent(0 /* timerIndicatorDuration */)
++                            : new FocusPreviousTaskViewEvent());
+                     break;
+                 case DOWN:
+-                    EventBus.getDefault().send(
+-                        new FocusNextTaskViewEvent(0 /* timerIndicatorDuration */));
++                    EventBus.getDefault().send(olderIsUp
++                            ? new FocusPreviousTaskViewEvent()
++                            : new FocusNextTaskViewEvent(0 /* timerIndicatorDuration */));
+                     break;
+             }
+         }
+@@ -2070,12 +2077,15 @@ public class TaskStackView extends FrameLayout implements TaskStack.TaskStackCal
+                     // Update the focused state here -- since we only set the focused task without
+                     // requesting view focus in onFirstLayout(), actually request view focus and
+                     // animate the focused state if we are alt-tabbing now, after the window enter
+-                    // animation is completed
++                    // animation is completed. Without a touch panel the task needs the view focus
++                    // too, or OK has nothing to open and the focus is not shown.
+                     if (mFocusedTask != null) {
+                         RecentsConfiguration config = Recents.getConfiguration();
+                         RecentsActivityLaunchState launchState = config.getLaunchState();
++                        final boolean noTouch = getResources().getConfiguration().touchscreen
++                                == Configuration.TOUCHSCREEN_NOTOUCH;
+                         setFocusedTask(mStack.indexOfStackTask(mFocusedTask),
+-                                false /* scrollToTask */, launchState.launchedWithAltTab);
++                                false /* scrollToTask */, launchState.launchedWithAltTab || noTouch);
+                         TaskView focusedTaskView = getChildViewForTask(mFocusedTask);
+                         if (mTouchExplorationEnabled && focusedTaskView != null) {
+                             focusedTaskView.requestAccessibilityFocus();

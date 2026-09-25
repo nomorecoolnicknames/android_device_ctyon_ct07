@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 17:18:05 +0300
+Subject: [PATCH 1/2] stagefright: foundation: MTK_HARDWARE on
+ BOARD_HAS_MTK_HARDWARE boards
+
+libstagefright is built with MTK_HARDWARE on these boards and calls the
+MediaBufferGroup constructor and acquire_buffer() overloads that
+MediaBufferGroup.h declares for it. Build the foundation library the
+same way so that it defines them; stock blobs import them as well.
+---
+ media/libstagefright/foundation/Android.mk | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/media/libstagefright/foundation/Android.mk b/media/libstagefright/foundation/Android.mk
+index 3c3ed59e3..1c9ff05c9 100644
+--- a/media/libstagefright/foundation/Android.mk
++++ b/media/libstagefright/foundation/Android.mk
+@@ -34,6 +34,12 @@ LOCAL_SHARED_LIBRARIES := \
+         libpowermanager
+ 
+ LOCAL_CFLAGS += -Wno-multichar -Werror -Wall
++
++# libstagefright is built with MTK_HARDWARE on these boards; MediaBufferGroup
++# has to provide the same constructors and acquire_buffer() overloads.
++ifeq ($(BOARD_HAS_MTK_HARDWARE),true)
++LOCAL_CFLAGS += -DMTK_HARDWARE
++endif
+ LOCAL_CLANG := true
+ LOCAL_SANITIZE := unsigned-integer-overflow signed-integer-overflow
+ 

@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 17:17:57 +0300
+Subject: [PATCH 2/2] libui: drop the C stub for the four-argument
+ GraphicBuffer constructor
+
+The stub was exported as _ZN7android13GraphicBufferC1Ejjij, the symbol of
+the constructor itself. Callers pass the object in r0; the stub took it
+for the width, allocated a different buffer and left the caller's object
+uninitialised. MediaTek camera and video encoder blobs call this
+constructor. With MTK_HARDWARE the real constructor is built and
+exported under that name.
+---
+ libs/ui/GraphicBuffer.cpp | 26 --------------------------
+ 1 file changed, 26 deletions(-)
+
+diff --git a/libs/ui/GraphicBuffer.cpp b/libs/ui/GraphicBuffer.cpp
+index b9766b9d3..c9f232c47 100644
+--- a/libs/ui/GraphicBuffer.cpp
++++ b/libs/ui/GraphicBuffer.cpp
+@@ -30,32 +30,6 @@
+ 
+ namespace android {
+ 
+-class GraphicBufferStub {
+- public:
+-  ~GraphicBufferStub();
+-  GraphicBufferStub(uint32_t inWidth, uint32_t inHeight,
+-        PixelFormat inFormat, uint32_t inUsage);
+-  sp<android::GraphicBuffer> mBuffer;
+-};
+-
+-GraphicBufferStub::GraphicBufferStub(uint32_t inWidth, uint32_t inHeight,
+-        PixelFormat inFormat, uint32_t inUsage)
+-  : mBuffer(new android::GraphicBuffer(inWidth, inHeight, inFormat, inUsage)) {
+-} // constructors take base initializers
+-
+-GraphicBufferStub::~GraphicBufferStub() {}
+-
+-extern "C" {
+-
+-void _ZN7android13GraphicBufferC1Ejjij(uint32_t inWidth, uint32_t inHeight,
+-        PixelFormat inFormat, uint32_t inUsage);
+-
+-void _ZN7android13GraphicBufferC1Ejjij(uint32_t inWidth, uint32_t inHeight,
+-        PixelFormat inFormat, uint32_t inUsage) {
+-	GraphicBufferStub::GraphicBufferStub(inWidth, inHeight, inFormat, inUsage);
+-}
+-}
+-
+ // ===========================================================================
+ // Buffer and implementation of ANativeWindowBuffer
+ // ===========================================================================

@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 17:25:20 +0300
+Subject: [PATCH 2/2] media: groups for the MediaTek device nodes and NVRAM
+
+On N the MediaTek codec, camera and audio libraries run in mediacodec,
+cameraserver and audioserver. They open /dev/Vcodec (media:system),
+/dev/MTK_SMI (media:media) and /dev/mt-mdp (system:media), and read
+calibration data from the NVRAM partition, which belongs to root:system.
+Add the media and system groups where they are missing.
+---
+ camera/cameraserver/cameraserver.rc | 2 +-
+ media/audioserver/audioserver.rc    | 2 +-
+ services/mediacodec/mediacodec.rc   | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/camera/cameraserver/cameraserver.rc b/camera/cameraserver/cameraserver.rc
+index 08277d674..b51dbc862 100644
+--- a/camera/cameraserver/cameraserver.rc
++++ b/camera/cameraserver/cameraserver.rc
+@@ -1,6 +1,6 @@
+ service cameraserver /system/bin/cameraserver
+     class main
+     user cameraserver
+-    group audio camera input drmrpc media
++    group audio camera input drmrpc media system
+     ioprio rt 4
+     writepid /dev/cpuset/camera-daemon/tasks /dev/stune/top-app/tasks
+diff --git a/media/audioserver/audioserver.rc b/media/audioserver/audioserver.rc
+index d8d3023e9..b5648a7f0 100644
+--- a/media/audioserver/audioserver.rc
++++ b/media/audioserver/audioserver.rc
+@@ -2,6 +2,6 @@ service audioserver /system/bin/audioserver
+     class main
+     user audioserver
+     # media gid needed for /dev/fm (radio) and for /data/misc/media (tee)
+-    group audio camera drmrpc inet media mediadrm net_bt net_bt_admin net_bw_acct qcom_diag
++    group audio camera drmrpc inet media mediadrm net_bt net_bt_admin net_bw_acct qcom_diag system
+     ioprio rt 4
+     writepid /dev/cpuset/foreground/tasks /dev/stune/foreground/tasks
+diff --git a/services/mediacodec/mediacodec.rc b/services/mediacodec/mediacodec.rc
+index 0debdd563..ce926c170 100644
+--- a/services/mediacodec/mediacodec.rc
++++ b/services/mediacodec/mediacodec.rc
+@@ -1,6 +1,6 @@
+ service mediacodec /system/bin/mediacodec
+     class main
+     user mediacodec
+-    group camera drmrpc mediadrm audio
++    group camera drmrpc mediadrm audio media system
+     ioprio rt 4
+     writepid /dev/cpuset/foreground/tasks

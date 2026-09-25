@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 17:17:49 +0300
+Subject: [PATCH 1/2] libui: build the MediaTek sources with MTK_HARDWARE
+
+Fence.h and GraphicBuffer.h declare their MediaTek members behind
+MTK_HARDWARE, which only BOARD_USES_MTK_HARDWARE defines for the whole
+tree. On BOARD_HAS_MTK_HARDWARE boards mediatek/Fence.cpp then fails to
+compile: Fence::dump() matches no declaration.
+---
+ libs/ui/Android.mk | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/libs/ui/Android.mk b/libs/ui/Android.mk
+index 7644d0dd9..3758adf18 100644
+--- a/libs/ui/Android.mk
++++ b/libs/ui/Android.mk
+@@ -56,6 +56,9 @@ LOCAL_SRC_FILES += \
+ 
+ # just make everything compile for now... cleanups later
+ LOCAL_CPPFLAGS := -std=c++1y -Weverything
++# The MediaTek parts of Fence.h and GraphicBuffer.h are behind MTK_HARDWARE,
++# which only BOARD_USES_MTK_HARDWARE defines tree-wide.
++LOCAL_CPPFLAGS += -DMTK_HARDWARE
+ endif
+ 
+ LOCAL_SHARED_LIBRARIES := \

@@ -1,0 +1,175 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 17:38:57 +0300
+Subject: [PATCH] Dialer: hardware keypad dialling (digits, CALL, BACK)
+
+For phones with a 12-key keypad and no touchscreen. The digits field does
+not reliably hold the focus in non-touch mode, and ENTER, the only key
+DialpadFragment.onKey() dials with, does not exist on such a phone.
+
+DialtactsActivity.dispatchKeyEvent hands digits, * and # to
+DialpadFragment.onHardwareKey, opening the dialpad first if needed:
+digits go into the number with their DTMF tone, holding 0 gives "+",
+CALL dials (or recalls the last number when nothing is typed), BACK
+deletes a digit and clears the number when held; with an empty number
+BACK is left to the activity. Keys are left alone while another text
+field (the search box) has the focus.
+
+ACTION_CALL_BUTTON only jumps to the in-call screen during a call; the
+CALL key used to close the dialer when the phone was idle.
+---
+ src/com/android/dialer/DialtactsActivity.java | 34 +++++++-
+ .../dialer/dialpad/DialpadFragment.java       | 81 +++++++++++++++++++
+ 2 files changed, 114 insertions(+), 1 deletion(-)
+
+diff --git a/src/com/android/dialer/DialtactsActivity.java b/src/com/android/dialer/DialtactsActivity.java
+index 4f4a24169..471a355ca 100644
+--- a/src/com/android/dialer/DialtactsActivity.java
++++ b/src/com/android/dialer/DialtactsActivity.java
+@@ -1065,7 +1065,9 @@ public class DialtactsActivity extends TransactionSafeActivity implements View.O
+         // button, go straight to the in-call screen.
+         final boolean callKey = Intent.ACTION_CALL_BUTTON.equals(intent.getAction());
+ 
+-        if (callKey) {
++        // The CALL key also arrives here when the phone is idle; finishing
++        // then would just close the dialer.
++        if (callKey && phoneIsInUse()) {
+             TelecomUtil.showInCallScreen(this, false);
+             return true;
+         }
+@@ -1246,6 +1248,36 @@ public class DialtactsActivity extends TransactionSafeActivity implements View.O
+         mActionBarController.onSearchUiExited();
+     }
+ 
++    /**
++     * Keypad phones without a touch panel: digits, * and # typed on the
++     * hardware keypad open the dialpad if needed and go into the number,
++     * CALL dials, BACK deletes a digit; see
++     * {@link DialpadFragment#onHardwareKey}. Keys an input method already
++     * took never get here, and keys are left alone while another text
++     * field (the search box) has the focus.
++     */
++    @Override
++    public boolean dispatchKeyEvent(KeyEvent event) {
++        final int keyCode = event.getKeyCode();
++        final boolean dialKey = (keyCode >= KeyEvent.KEYCODE_0 && keyCode <= KeyEvent.KEYCODE_9)
++                || keyCode == KeyEvent.KEYCODE_STAR || keyCode == KeyEvent.KEYCODE_POUND;
++        final View focus = getCurrentFocus();
++        final boolean otherTextField = focus instanceof EditText && focus.getId() != R.id.digits;
++        if (!otherTextField && !mStateSaved
++                && (dialKey || keyCode == KeyEvent.KEYCODE_CALL || keyCode == KeyEvent.KEYCODE_BACK)) {
++            if (dialKey && !mIsDialpadShown && event.getAction() == KeyEvent.ACTION_DOWN
++                    && event.getRepeatCount() == 0) {
++                showDialpadFragment(false);
++                getFragmentManager().executePendingTransactions();
++            }
++            if (mIsDialpadShown && mDialpadFragment != null
++                    && mDialpadFragment.onHardwareKey(keyCode, event)) {
++                return true;
++            }
++        }
++        return super.dispatchKeyEvent(event);
++    }
++
+     @Override
+     public void onBackPressed() {
+         if (mStateSaved) {
+diff --git a/src/com/android/dialer/dialpad/DialpadFragment.java b/src/com/android/dialer/dialpad/DialpadFragment.java
+index a961ddb2f..8ea3d6d20 100644
+--- a/src/com/android/dialer/dialpad/DialpadFragment.java
++++ b/src/com/android/dialer/dialpad/DialpadFragment.java
+@@ -909,6 +909,80 @@ public class DialpadFragment extends Fragment
+         ((Context) getActivity()).unregisterReceiver(mCallStateReceiver);
+     }
+ 
++    // Keypad phones without a touch panel. DialtactsActivity hands key events
++    // here while the dialpad is shown, because the digits field does not
++    // reliably hold the focus in non-touch mode and ENTER, the only key onKey()
++    // dials with, does not exist on such a phone.
++    //   0-9 * #   enter the digit with its DTMF tone; holding 0 gives "+"
++    //   CALL      dials, or brings back the last number when nothing is typed
++    //   BACK      deletes the last digit; held, clears the number; with an
++    //             empty number it is left to the activity (closes the dialpad)
++    private boolean mHwBackLongPressed;
++
++    public boolean onHardwareKey(int keyCode, KeyEvent event) {
++        if (getView() == null || mDigits == null) {
++            return false;
++        }
++        final boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
++        switch (keyCode) {
++            case KeyEvent.KEYCODE_0:
++                if (down && event.getRepeatCount() == 1) {
++                    stopTone();
++                    removePreviousDigitIfPossible('0');
++                    keyPressed(KeyEvent.KEYCODE_PLUS);
++                    return true;
++                }
++                // fall through
++            case KeyEvent.KEYCODE_1:
++            case KeyEvent.KEYCODE_2:
++            case KeyEvent.KEYCODE_3:
++            case KeyEvent.KEYCODE_4:
++            case KeyEvent.KEYCODE_5:
++            case KeyEvent.KEYCODE_6:
++            case KeyEvent.KEYCODE_7:
++            case KeyEvent.KEYCODE_8:
++            case KeyEvent.KEYCODE_9:
++            case KeyEvent.KEYCODE_STAR:
++            case KeyEvent.KEYCODE_POUND:
++                if (down) {
++                    if (event.getRepeatCount() == 0) {
++                        keyPressed(keyCode);
++                    }
++                } else {
++                    stopTone();
++                }
++                return true;
++            case KeyEvent.KEYCODE_CALL:
++                if (!down) {
++                    handleDialButtonPressed();
++                }
++                return true;
++            case KeyEvent.KEYCODE_BACK:
++                if (down) {
++                    if (event.getRepeatCount() == 0) {
++                        mHwBackLongPressed = false;
++                        return !isDigitsEmpty();
++                    }
++                    if (!mHwBackLongPressed && !isDigitsEmpty()) {
++                        mHwBackLongPressed = true;
++                        clearDialpad();
++                    }
++                    return true;
++                }
++                if (mHwBackLongPressed) {
++                    mHwBackLongPressed = false;
++                    return true;
++                }
++                if (isDigitsEmpty() || event.isCanceled()) {
++                    return false;
++                }
++                keyPressed(KeyEvent.KEYCODE_DEL);
++                return true;
++            default:
++                return false;
++        }
++    }
++
+     private void keyPressed(int keyCode) {
+         if (getView() == null || getView().getTranslationY() != 0) {
+             return;
+@@ -972,6 +1046,13 @@ public class DialpadFragment extends Fragment
+                 handleDialButtonPressed();
+                 return true;
+             }
++            // The hardware CALL key dials like ENTER.
++            if (keyCode == KeyEvent.KEYCODE_CALL) {
++                if (event.getAction() == KeyEvent.ACTION_UP) {
++                    handleDialButtonPressed();
++                }
++                return true;
++            }
+ 
+         }
+         return false;

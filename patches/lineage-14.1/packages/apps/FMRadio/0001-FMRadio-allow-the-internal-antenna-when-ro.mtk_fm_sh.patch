@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 13:17:07 +0300
+Subject: [PATCH 1/2] FMRadio: allow the internal antenna when
+ ro.mtk_fm_short_antenna_support is set
+
+Some MediaTek phones have a short internal FM antenna and declare it with
+ro.mtk_fm_short_antenna_support=true. Without this, isAntennaAvailable()
+demands a wired headset and tuneStation() refuses. With the property set
+the service also switches the driver to the short antenna before powerUp
+when no headset is plugged in. Devices without the property keep the
+original behaviour.
+---
+ src/com/android/fmradio/FmService.java | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/src/com/android/fmradio/FmService.java b/src/com/android/fmradio/FmService.java
+index c336397..7087ede 100644
+--- a/src/com/android/fmradio/FmService.java
++++ b/src/com/android/fmradio/FmService.java
+@@ -57,6 +57,7 @@ import android.os.Message;
+ import android.os.PowerManager;
+ import android.os.PowerManager.WakeLock;
+ import android.os.Process;
++import android.os.SystemProperties;
+ import android.text.TextUtils;
+ import android.util.Log;
+ 
+@@ -363,7 +364,13 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
+      * @return true, antenna available; false, antenna not available
+      */
+     public boolean isAntennaAvailable() {
+-        return mAudioManager.isWiredHeadsetOn();
++        // With ro.mtk_fm_short_antenna_support the internal (short) antenna
++        // can be used and a headset is optional.
++        return mAudioManager.isWiredHeadsetOn() || isShortAntennaSupported();
++    }
++
++    private static boolean isShortAntennaSupported() {
++        return SystemProperties.getBoolean("ro.mtk_fm_short_antenna_support", false);
+     }
+ 
+     private void setForceUse(boolean isSpeaker) {
+@@ -636,6 +643,12 @@ public class FmService extends Service implements FmRecorder.OnRecorderStateChan
+             openDevice();
+         }
+ 
++        // Pick the antenna before powering up: 0 = long (headset cable),
++        // 1 = short (internal).
++        if (isShortAntennaSupported()) {
++            switchAntenna(mAudioManager.isWiredHeadsetOn() ? 0 : 1);
++        }
++
+         if (!FmNative.powerUp(frequency)) {
+             mPowerStatus = POWER_DOWN;
+             return false;

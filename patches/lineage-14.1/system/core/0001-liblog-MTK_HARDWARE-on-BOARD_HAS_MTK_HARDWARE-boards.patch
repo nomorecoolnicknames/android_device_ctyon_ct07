@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 17:18:11 +0300
+Subject: [PATCH] liblog: MTK_HARDWARE on BOARD_HAS_MTK_HARDWARE boards
+
+logger_write.c only builds __xlog_buf_printf() with MTK_HARDWARE, which
+only BOARD_USES_MTK_HARDWARE defines for the whole tree. Stock MediaTek
+blobs import it from liblog.
+---
+ liblog/Android.mk | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/liblog/Android.mk b/liblog/Android.mk
+index b24b489aa..4c4d6c1bf 100644
+--- a/liblog/Android.mk
++++ b/liblog/Android.mk
+@@ -65,6 +65,11 @@ include $(CLEAR_VARS)
+ LOCAL_MODULE := liblog
+ LOCAL_SRC_FILES := $(liblog_target_sources)
+ LOCAL_CFLAGS := -Werror -fvisibility=hidden $(liblog_cflags)
++# Stock MediaTek blobs call __xlog_buf_printf(), which logger_write.c has
++# behind MTK_HARDWARE.
++ifeq ($(BOARD_HAS_MTK_HARDWARE),true)
++LOCAL_CFLAGS += -DMTK_HARDWARE
++endif
+ # AddressSanitizer runtime library depends on liblog.
+ LOCAL_SANITIZE := never
+ include $(BUILD_STATIC_LIBRARY)
