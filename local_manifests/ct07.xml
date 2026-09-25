@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <remote name="github" fetch="https://github.com/" />
+
+  <project path="device/bird/ct07" name="nomorecoolnicknames/android_device_ctyon_ct07" remote="github" revision="lineage-14.1" />
+  <project path="vendor/ctyon/ct07" name="nomorecoolnicknames/android_vendor_ctyon_ct07" remote="github" revision="lineage-14.1" />
+
+  <project path="device/meizu/m5c" name="Dekompilyator/android_device_meizu_m5c" remote="github" revision="c2f4712e72795cf68b9ae34e33d02516a4e7308d" upstream="los-14.1" />
+
+  <project path="packages/apps/MonoLaunch" name="nomorecoolnicknames/MonoLaunch" remote="github" revision="ct07" />
+  <project path="packages/apps/CT07KeyMouse" name="nomorecoolnicknames/android_packages_apps_CT07KeyMouse" remote="github" revision="master" />
+</manifest>
