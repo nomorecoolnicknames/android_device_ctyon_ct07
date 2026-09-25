@@ -26,3 +26,7 @@ ro.audio.flinger_standbytime_ms=1500
 # The stock audio HAL leaves audio_stream_in::get_capture_position unset;
 # the hardware/interfaces patch skips the call when this is set.
 ro.audio.legacy_hal_no_capture_position=1
+# The stock camera HAL fills metadata-mode recording buffers with gralloc
+# handles of its own process; the hardware/interfaces patch makes
+# CameraSource record from YUV callbacks when this is set.
+ro.camera.legacy_hal1_yuv_recording=1

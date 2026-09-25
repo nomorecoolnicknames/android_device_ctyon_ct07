@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 17:30:00 +0300
+Subject: [PATCH 9/9] camera: device@1.0: record from YUV callbacks for legacy
+ MediaTek HAL1
+
+MediaTek's HAL1 modules built for M (libcam.client) fill metadata-mode
+recording buffers with gralloc-source metadata, a buffer_handle_t that is
+only valid in the provider process. It reaches the encoder as raw memory
+and the recording fails with ERROR_MALFORMED.
+
+With ro.camera.legacy_hal1_yuv_recording=1 metadata mode is refused and
+CameraSource falls back to YUV data callbacks. The HAL delivers those
+frames as YV12 while CameraSource declares "yuv420p" to the encoder as
+I420, so the chroma planes are reordered in place before a frame is
+passed on. Off by default.
+---
+ camera/device/1.0/default/CameraDevice.cpp   | 110 +++++++++++++++++++
+ camera/device/1.0/default/CameraDevice_1_0.h |   6 +
+ 2 files changed, 116 insertions(+)
+
+diff --git a/camera/device/1.0/default/CameraDevice.cpp b/camera/device/1.0/default/CameraDevice.cpp
+index 45a6569..3d2dd65 100644
+--- a/camera/device/1.0/default/CameraDevice.cpp
++++ b/camera/device/1.0/default/CameraDevice.cpp
+@@ -15,11 +15,16 @@
+  */
+ 
+ #define LOG_TAG "CamDev@1.0-impl"
++#include <cutils/properties.h>
+ #include <hardware/camera.h>
+ #include <hardware/gralloc1.h>
+ #include <hidlmemory/mapping.h>
+ #include <log/log.h>
++#include <stdio.h>
++#include <string.h>
+ #include <utils/Trace.h>
++#include <string>
++#include <vector>
+ 
+ #include <media/hardware/HardwareAPI.h> // For VideoNativeHandleMetadata
+ #include "CameraDevice_1_0.h"
+@@ -36,6 +41,67 @@ using ::android::hardware::graphics::common::V1_0::PixelFormat;
+ 
+ HandleImporter CameraDevice::sHandleImporter;
+ 
++namespace {
++
++// MediaTek's M-era HAL1 (libcam.client) fills metadata-mode recording
++// buffers with pre-N gralloc-source metadata, which cannot be passed on
++// across processes. With ro.camera.legacy_hal1_yuv_recording=1 metadata mode
++// is refused, CameraSource falls back to YUV data callbacks, and the YV12
++// frames the HAL labels "yuv420p" are rewritten as the I420 that
++// CameraSource declares to the encoder for that format.
++bool legacyHal1YuvRecording() {
++    static const bool enabled =
++            property_get_bool("ro.camera.legacy_hal1_yuv_recording", false);
++    return enabled;
++}
++
++// Value of a key in a flattened CameraParameters string; empty if absent.
++std::string findParameter(const char* params, const char* key) {
++    const size_t keyLen = strlen(key);
++    for (const char* p = params; p != nullptr && *p != '\0';) {
++        const char* end = strchr(p, ';');
++        const char* eq = strchr(p, '=');
++        if (eq != nullptr && (end == nullptr || eq < end) &&
++                static_cast<size_t>(eq - p) == keyLen && strncmp(p, key, keyLen) == 0) {
++            return end != nullptr ? std::string(eq + 1, end - eq - 1) : std::string(eq + 1);
++        }
++        p = end != nullptr ? end + 1 : nullptr;
++    }
++    return std::string();
++}
++
++// Rewrites a YV12 frame (Y, then Cr, then Cb) as packed I420 (Y, Cb, Cr) in
++// place. The strides are either packed or aligned to 16 as the Android YV12
++// format defines them; the buffer size tells which.
++bool yv12ToI420InPlace(uint8_t* frame, size_t size, size_t width, size_t height) {
++    const size_t chromaWidth = width / 2;
++    const size_t chromaHeight = height / 2;
++    size_t yStride = width;
++    size_t cStride = chromaWidth;
++    if (size != width * height + 2 * chromaWidth * chromaHeight) {
++        yStride = (width + 15) & ~static_cast<size_t>(15);
++        cStride = (yStride / 2 + 15) & ~static_cast<size_t>(15);
++        if (size != yStride * height + 2 * cStride * chromaHeight) {
++            return false;
++        }
++    }
++    static thread_local std::vector<uint8_t> chroma;
++    chroma.resize(2 * chromaWidth * chromaHeight);
++    const uint8_t* cr = frame + yStride * height;
++    const uint8_t* cb = cr + cStride * chromaHeight;
++    for (size_t row = 0; row < chromaHeight; row++) {
++        memcpy(&chroma[row * chromaWidth], cb + row * cStride, chromaWidth);
++        memcpy(&chroma[(chromaHeight + row) * chromaWidth], cr + row * cStride, chromaWidth);
++    }
++    for (size_t row = 1; yStride != width && row < height; row++) {
++        memmove(frame + row * width, frame + row * yStride, width);
++    }
++    memcpy(frame + width * height, chroma.data(), chroma.size());
++    return true;
++}
++
++}  // namespace
++
+ Status CameraDevice::getHidlStatus(const int& status) {
+     switch (status) {
+         case 0: return Status::OK;
+@@ -612,6 +678,14 @@ void CameraDevice::sDataCbTimestamp(nsecs_t timestamp, int32_t msg_type,
+                 handle = md->pHandle;
+             }
+         }
++    } else if (object->mYuvRecordingWidth > 0 && msg_type == CAMERA_MSG_VIDEO_FRAME) {
++        uint8_t* frame = (uint8_t*) mem->mHidlHeapMemData + index * mem->mBufSize;
++        if (!yv12ToI420InPlace(frame, mem->mBufSize,
++                object->mYuvRecordingWidth, object->mYuvRecordingHeight)) {
++            ALOGW("%s: %zu-byte frame is not YV12 %dx%d, passed on as is", __FUNCTION__,
++                    mem->mBufSize, object->mYuvRecordingWidth, object->mYuvRecordingHeight);
++            object->mYuvRecordingWidth = 0;
++        }
+     }
+ 
+     if (object->mDeviceCallback != nullptr) {
+@@ -886,6 +960,10 @@ Return<Status> CameraDevice::storeMetaDataInBuffers(bool enable) {
+         ALOGE("%s called while camera is not opened", __FUNCTION__);
+         return Status::OPERATION_NOT_SUPPORTED;
+     }
++    if (enable && legacyHal1YuvRecording()) {
++        ALOGI("%s: metadata mode refused, recording from YUV callbacks", __FUNCTION__);
++        return Status::OPERATION_NOT_SUPPORTED;
++    }
+     if (mDevice->ops->store_meta_data_in_buffers) {
+         status_t s = mDevice->ops->store_meta_data_in_buffers(mDevice, enable);
+         if (s == OK && enable) {
+@@ -904,11 +982,43 @@ Return<Status> CameraDevice::startRecording() {
+         return Status::OPERATION_NOT_SUPPORTED;
+     }
+     if (mDevice->ops->start_recording) {
++        mYuvRecordingWidth = 0;
++        if (legacyHal1YuvRecording() && !mMetadataMode) {
++            updateYuvRecordingSizeLocked();
++        }
+         return getHidlStatus(mDevice->ops->start_recording(mDevice));
+     }
+     return Status::ILLEGAL_ARGUMENT;
+ }
+ 
++void CameraDevice::updateYuvRecordingSizeLocked() {
++    if (!mDevice->ops->get_parameters) {
++        return;
++    }
++    char* params = mDevice->ops->get_parameters(mDevice);
++    if (params == nullptr) {
++        return;
++    }
++    const std::string format = findParameter(params, "video-frame-format");
++    // Recording frames have the video size, or the preview size on HALs
++    // without separate video sizes.
++    const std::string size = findParameter(params,
++            findParameter(params, "video-size-values").empty() ? "preview-size" : "video-size");
++    if (mDevice->ops->put_parameters) {
++        mDevice->ops->put_parameters(mDevice, params);
++    } else {
++        free(params);
++    }
++    int width = 0, height = 0;
++    if (format == "yuv420p" && sscanf(size.c_str(), "%dx%d", &width, &height) == 2 &&
++            width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0) {
++        mYuvRecordingWidth = width;
++        mYuvRecordingHeight = height;
++    }
++    ALOGI("%s: %s frames %s, %s", __FUNCTION__, format.c_str(), size.c_str(),
++            mYuvRecordingWidth > 0 ? "YV12 -> I420" : "passed on as is");
++}
++
+ Return<void> CameraDevice::stopRecording() {
+     ALOGV("%s(%s)", __FUNCTION__, mCameraId.c_str());
+     Mutex::Autolock _l(mLock);
+diff --git a/camera/device/1.0/default/CameraDevice_1_0.h b/camera/device/1.0/default/CameraDevice_1_0.h
+index 0af6db6..b16b26e 100644
+--- a/camera/device/1.0/default/CameraDevice_1_0.h
++++ b/camera/device/1.0/default/CameraDevice_1_0.h
+@@ -199,6 +199,12 @@ private:
+ 
+     bool mMetadataMode = false;
+ 
++    // ro.camera.legacy_hal1_yuv_recording: size of the YV12 recording frames
++    // rewritten as I420, 0 when frames are passed on as they are.
++    int mYuvRecordingWidth = 0;
++    int mYuvRecordingHeight = 0;
++    void updateYuvRecordingSizeLocked();
++
+     mutable Mutex mBatchLock;
+     // Start of protection scope for mBatchLock
+     uint32_t mBatchSize = 0; // 0 for non-batch mode, set to other value to start batching
