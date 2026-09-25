@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Tue, 28 Jul 2026 13:42:50 +0300
+Subject: [PATCH 3/5] wifi_hal: build against LineageOS 16.0
+
+The legacy HAL function table has no wifi_wait_for_driver_ready here,
+and WIFI_SUBCMD_GET_CHANNEL_LIST is not defined; use the GScan subcommand
+(0x1009) for the channel list.
+---
+ wlan/wifi_hal/common.h     | 2 +-
+ wlan/wifi_hal/wifi_hal.cpp | 3 +--
+ 2 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/wlan/wifi_hal/common.h b/wlan/wifi_hal/common.h
+index 46d9e43..10be341 100644
+--- a/wlan/wifi_hal/common.h
++++ b/wlan/wifi_hal/common.h
+@@ -101,6 +101,7 @@ typedef enum {
+ 
+     GSCAN_SUBCMD_SET_SIGNIFICANT_CHANGE_CONFIG,       /* 0x1007 */
+     GSCAN_SUBCMD_ENABLE_FULL_SCAN_RESULTS,            /* 0x1008 */
++    GSCAN_SUBCMD_GET_CHANNEL_LIST,                    /* 0x1009 */
+ 
+     GSCAN_SUBCMD_SET_EPNO_SSID = 0x100F,              /* 0x100F */
+ 
+@@ -273,4 +274,3 @@ wifi_error wifi_cancel_cmd(wifi_request_id id, wifi_interface_handle iface);
+     } while (0)
+ 
+ #endif
+-
+diff --git a/wlan/wifi_hal/wifi_hal.cpp b/wlan/wifi_hal/wifi_hal.cpp
+index 86ed423..1859db7 100644
+--- a/wlan/wifi_hal/wifi_hal.cpp
++++ b/wlan/wifi_hal/wifi_hal.cpp
+@@ -149,7 +149,6 @@ wifi_error init_wifi_vendor_hal_func_table(wifi_hal_fn *fn)
+     fn->wifi_get_packet_filter_capabilities = wifi_get_packet_filter_capabilities_dummy;
+     fn->wifi_get_wake_reason_stats = wifi_get_wake_reason_stats_dummy;
+ 
+-    populateDummyFor(fn->wifi_wait_for_driver_ready);
+     populateDummyFor(fn->wifi_set_nodfs_flag);
+     populateDummyFor(fn->wifi_set_log_handler);
+     populateDummyFor(fn->wifi_reset_log_handler);
+@@ -1044,7 +1043,7 @@ public:
+     virtual int create() {
+         ALOGV("Creating message to get channel list; iface = %d", mIfaceInfo->id);
+ 
+-        int ret = mMsg.create(GOOGLE_OUI, WIFI_SUBCMD_GET_CHANNEL_LIST);
++        int ret = mMsg.create(GOOGLE_OUI, GSCAN_SUBCMD_GET_CHANNEL_LIST);
+         if (ret < 0) {
+             return ret;
+         }

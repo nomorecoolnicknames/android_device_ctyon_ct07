@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Tue, 28 Jul 2026 13:42:50 +0300
+Subject: [PATCH 2/3] liblog: add __xlog_buf_printf for MediaTek vendor blobs
+
+MediaTek vendor libraries log through MediaTek's xlog backend and import
+__xlog_buf_printf, which AOSP liblog does not export; they cannot be
+loaded without it. Forward the call to __android_log_vprint().
+---
+ liblog/liblog.map.txt |  1 +
+ liblog/logger_write.c | 33 +++++++++++++++++++++++++++++++++
+ 2 files changed, 34 insertions(+)
+
+diff --git a/liblog/liblog.map.txt b/liblog/liblog.map.txt
+index 66670fe..9c113a4 100644
+--- a/liblog/liblog.map.txt
++++ b/liblog/liblog.map.txt
+@@ -50,6 +50,7 @@ LIBLOG_M {
+ 
+ LIBLOG_O {
+   global:
++    __xlog_buf_printf;
+     __android_log_is_loggable_len;
+     __android_log_is_debuggable; # vndk
+ };
+diff --git a/liblog/logger_write.c b/liblog/logger_write.c
+index 2754e6e..cbd848d 100644
+--- a/liblog/logger_write.c
++++ b/liblog/logger_write.c
+@@ -15,6 +15,10 @@
+  */
+ 
+ #include <errno.h>
++#include <stdarg.h>
++#ifdef __BIONIC__
++#include <sys/system_properties.h>
++#endif
+ #include <stdatomic.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -725,3 +729,32 @@ LIBLOG_ABI_PUBLIC int android_get_log_transport() {
+ 
+   return ret;
+ }
++
++/*
++ * MediaTek xlog backend, imported by many MediaTek vendor blobs. Routed into
++ * __android_log_vprint(); ro.disable.xlog=1 turns it off.
++ */
++#ifndef __unused
++#define __unused __attribute__((__unused__))
++#endif
++
++struct xlog_record {
++  const char* tag_str;
++  const char* fmt_str;
++  int prio;
++};
++
++LIBLOG_ABI_PUBLIC void __attribute__((weak))
++__xlog_buf_printf(int bufid __unused, const struct xlog_record* xlog_record __unused, ...) {
++#if !defined(FAKE_LOG_DEVICE) && defined(__BIONIC__)
++  char prop[32] = "0";
++  __system_property_get("ro.disable.xlog", prop);
++  if (!strcmp(prop, "0"))
++#endif
++  {
++    va_list args;
++    va_start(args, xlog_record);
++    __android_log_vprint(xlog_record->prio, xlog_record->tag_str, xlog_record->fmt_str, args);
++    va_end(args);
++  }
++}

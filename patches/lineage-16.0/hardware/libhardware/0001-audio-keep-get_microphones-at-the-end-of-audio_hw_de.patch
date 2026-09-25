@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Tue, 28 Jul 2026 13:42:49 +0300
+Subject: [PATCH] audio: keep get_microphones at the end of audio_hw_device
+
+Android 9 added get_microphones between close_input_stream and dump,
+which moves every later member of struct audio_hw_device. An audio HAL
+built for an older release is then called through the wrong slots
+(create_audio_patch through get_master_mute and so on). With the member
+at the end the older layout is a prefix of the new one.
+---
+ include/hardware/audio.h | 40 +++++++++++++++++++++-------------------
+ 1 file changed, 21 insertions(+), 19 deletions(-)
+
+diff --git a/include/hardware/audio.h b/include/hardware/audio.h
+index 10a8789..e1727b7 100644
+--- a/include/hardware/audio.h
++++ b/include/hardware/audio.h
+@@ -727,25 +727,6 @@ struct audio_hw_device {
+     void (*close_input_stream)(struct audio_hw_device *dev,
+                                struct audio_stream_in *stream_in);
+ 
+-    /**
+-     * Called by the framework to read available microphones characteristics.
+-     *
+-     * \param[in] dev the hw_device object.
+-     * \param[out] mic_array Pointer to first element on array with microphone info
+-     * \param[out] mic_count When called, this holds the value of the max number of elements
+-     *                       allowed in the mic_array. The actual number of elements written
+-     *                       is returned here.
+-     *                       if mic_count is passed as zero, mic_array will not be populated,
+-     *                       and mic_count will return the actual number of microphones in the
+-     *                       system.
+-     *
+-     * \return 0 if the microphone array is successfully filled.
+-     *         -ENOSYS if there is an error filling the data
+-     */
+-    int (*get_microphones)(const struct audio_hw_device *dev,
+-                           struct audio_microphone_characteristic_t *mic_array,
+-                           size_t *mic_count);
+-
+     /** This method dumps the state of the audio hardware */
+     int (*dump)(const struct audio_hw_device *dev, int fd);
+ 
+@@ -795,6 +776,27 @@ struct audio_hw_device {
+     int (*set_audio_port_config)(struct audio_hw_device *dev,
+                          const struct audio_port_config *config);
+ 
++    /* Kept last: before dump it would shift every later member for HALs
++     * built against an older audio.h. */
++    /**
++     * Called by the framework to read available microphones characteristics.
++     *
++     * \param[in] dev the hw_device object.
++     * \param[out] mic_array Pointer to first element on array with microphone info
++     * \param[out] mic_count When called, this holds the value of the max number of elements
++     *                       allowed in the mic_array. The actual number of elements written
++     *                       is returned here.
++     *                       if mic_count is passed as zero, mic_array will not be populated,
++     *                       and mic_count will return the actual number of microphones in the
++     *                       system.
++     *
++     * \return 0 if the microphone array is successfully filled.
++     *         -ENOSYS if there is an error filling the data
++     */
++    int (*get_microphones)(const struct audio_hw_device *dev,
++                           struct audio_microphone_characteristic_t *mic_array,
++                           size_t *mic_count);
++
+ };
+ typedef struct audio_hw_device audio_hw_device_t;
+ 

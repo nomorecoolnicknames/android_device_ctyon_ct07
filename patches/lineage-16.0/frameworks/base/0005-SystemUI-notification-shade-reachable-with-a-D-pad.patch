@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 16:00:52 +0300
+Subject: [PATCH 5/7] SystemUI: notification shade reachable with a D-pad
+
+Without a touchscreen the expanded shade could not be used: the initial
+focus went to scrim_behind, a full-screen view, and no D-pad key could
+move it (every item lies inside it). Two views take the focus that way:
+
+- ScrimController made both scrims focusable outside AOD. A scrim is
+  never a useful focus target; it is now never focusable.
+- QSContainerImpl is clickable, which makes it focusable; focused itself
+  it kept the D-pad out of the quick settings tiles. It now gives the
+  focus to its children first (FOCUS_AFTER_DESCENDANTS).
+---
+ .../src/com/android/systemui/qs/QSContainerImpl.java       | 4 ++++
+ .../android/systemui/statusbar/phone/ScrimController.java  | 7 +++++--
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/qs/QSContainerImpl.java b/packages/SystemUI/src/com/android/systemui/qs/QSContainerImpl.java
+index d8bf990f6..09dc90b16 100644
+--- a/packages/SystemUI/src/com/android/systemui/qs/QSContainerImpl.java
++++ b/packages/SystemUI/src/com/android/systemui/qs/QSContainerImpl.java
+@@ -70,6 +70,10 @@ public class QSContainerImpl extends FrameLayout {
+         mSideMargins = getResources().getDimensionPixelSize(R.dimen.notification_side_paddings);
+ 
+         setClickable(true);
++        // Being clickable makes the container focusable. Focused itself, it kept the D-pad out of
++        // the tiles, which all lie inside it (keypad phones without a touch panel): let the
++        // children take the focus first.
++        setDescendantFocusability(FOCUS_AFTER_DESCENDANTS);
+         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+         setMargins();
+     }
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScrimController.java b/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScrimController.java
+index eb029aba3..fe4eec583 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScrimController.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScrimController.java
+@@ -246,8 +246,11 @@ public class ScrimController implements ViewTreeObserver.OnPreDrawListener, OnCo
+ 
+         // Scrim might acquire focus when user is navigating with a D-pad or a keyboard.
+         // We need to disable focus otherwise AOD would end up with a gray overlay.
+-        mScrimInFront.setFocusable(!state.isLowPowerState());
+-        mScrimBehind.setFocusable(!state.isLowPowerState());
++        // Outside AOD a focusable scrim is no better: it covers the whole window, so in the
++        // expanded shade it took the initial focus and no D-pad key could move it on to the
++        // quick settings or the notifications (keypad phones without a touch panel).
++        mScrimInFront.setFocusable(false);
++        mScrimBehind.setFocusable(false);
+ 
+         // Cancel blanking transitions that were pending before we requested a new state
+         if (mPendingFrameCallback != null) {

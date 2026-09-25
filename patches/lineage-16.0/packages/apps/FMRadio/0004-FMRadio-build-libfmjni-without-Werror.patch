@@ -1,0 +1,23 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 17:30:19 +0300
+Subject: [PATCH 4/4] FMRadio: build libfmjni without -Werror
+
+The JNI sources have unused parameters and variables, which the default
+-Wall -Werror turns into build errors.
+---
+ jni/fmr/Android.mk | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/jni/fmr/Android.mk b/jni/fmr/Android.mk
+index d6a6ec1..824102f 100644
+--- a/jni/fmr/Android.mk
++++ b/jni/fmr/Android.mk
+@@ -34,6 +34,7 @@ LOCAL_SHARED_LIBRARIES := \
+     libmedia \
+     liblog
+ 
++LOCAL_CFLAGS += -Wno-unused-parameter -Wno-unused-variable -Wno-error
+ LOCAL_MODULE := libfmjni
+ LOCAL_MODULE_TAGS := optional
+ 

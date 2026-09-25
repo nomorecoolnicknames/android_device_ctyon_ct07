@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Wed, 23 Sep 2026 17:38:45 +0300
+Subject: [PATCH 2/4] FMRadio: the activity honours the short antenna too
+
+FmMainActivity kept its own headset-only isAntennaAvailable(), so with
+ro.mtk_fm_short_antenna_support the service powered the tuner up while
+the UI still asked to connect headphones.
+---
+ src/com/android/fmradio/FmMainActivity.java | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/com/android/fmradio/FmMainActivity.java b/src/com/android/fmradio/FmMainActivity.java
+index 82db51b..216a23a 100644
+--- a/src/com/android/fmradio/FmMainActivity.java
++++ b/src/com/android/fmradio/FmMainActivity.java
+@@ -852,7 +852,10 @@ public class FmMainActivity extends Activity implements FmFavoriteEditDialog.Edi
+      * @return true or false indicate antenna available or not
+      */
+     private boolean isAntennaAvailable() {
+-        return mAudioManager.isWiredHeadsetOn();
++        // Same rule as FmService.isAntennaAvailable().
++        return mAudioManager.isWiredHeadsetOn()
++                || android.os.SystemProperties.getBoolean(
++                        "ro.mtk_fm_short_antenna_support", false);
+     }
+ 
+     /**

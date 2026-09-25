@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 18:57:42 +0300
+Subject: [PATCH 2/8] audio: report master mute as not supported
+
+Legacy MediaTek audio HALs do not implement master mute but keep other
+members in the set_master_mute/get_master_mute slots of
+struct audio_hw_device. The NULL checks pass and the calls end up in
+unrelated functions (SIGSEGV in AudioALSAHardware::createAudioPatch).
+Report NOT_SUPPORTED; Android falls back to per-stream volume.
+---
+ .../include/core/all-versions/default/Device.impl.h       | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/audio/core/all-versions/default/include/core/all-versions/default/Device.impl.h b/audio/core/all-versions/default/include/core/all-versions/default/Device.impl.h
+index 230b8de..a08f013 100644
+--- a/audio/core/all-versions/default/include/core/all-versions/default/Device.impl.h
++++ b/audio/core/all-versions/default/include/core/all-versions/default/Device.impl.h
+@@ -97,9 +97,13 @@ Return<void> Device::getMicMute(getMicMute_cb _hidl_cb) {
+     return Void();
+ }
+ 
++/* Legacy MediaTek audio HALs keep other members in the master mute slots
++ * of struct audio_hw_device, so the NULL checks pass and the calls land in
++ * the wrong functions. Report NOT_SUPPORTED; per-stream volume is used. */
++#define MTK_LEGACY_NO_MASTER_MUTE 1
+ Return<Result> Device::setMasterMute(bool mute) {
+     Result retval(Result::NOT_SUPPORTED);
+-    if (mDevice->set_master_mute != NULL) {
++    if (!MTK_LEGACY_NO_MASTER_MUTE && mDevice->set_master_mute != NULL) {
+         retval = analyzeStatus("set_master_mute", mDevice->set_master_mute(mDevice, mute));
+     }
+     return retval;
+@@ -108,7 +112,7 @@ Return<Result> Device::setMasterMute(bool mute) {
+ Return<void> Device::getMasterMute(getMasterMute_cb _hidl_cb) {
+     Result retval(Result::NOT_SUPPORTED);
+     bool mute = false;
+-    if (mDevice->get_master_mute != NULL) {
++    if (!MTK_LEGACY_NO_MASTER_MUTE && mDevice->get_master_mute != NULL) {
+         retval = analyzeStatus("get_master_mute", mDevice->get_master_mute(mDevice, &mute));
+     }
+     _hidl_cb(retval, mute);

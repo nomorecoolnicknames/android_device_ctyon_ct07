@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Sun, 2 Aug 2026 22:53:37 +0300
+Subject: [PATCH] RIL: re-arm the radio proxy after a stale-handle getService
+ race
+
+If rild dies between getService() returning and setResponseFunctions(),
+the call throws (HwBinder error -32), mRadioProxy stays null and no retry
+is scheduled, so telephony is stuck until the phone process is killed.
+MediaTek modem init can restart rild at that moment. Replay
+EVENT_RADIO_PROXY_DEAD with the current cookie so the handler gets the
+service again; a successful attach in the meantime bumps the cookie and
+the replay is ignored.
+---
+ src/java/com/android/internal/telephony/RIL.java | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/java/com/android/internal/telephony/RIL.java b/src/java/com/android/internal/telephony/RIL.java
+index 7352dc5..8c1e3b0 100644
+--- a/src/java/com/android/internal/telephony/RIL.java
++++ b/src/java/com/android/internal/telephony/RIL.java
+@@ -380,6 +380,15 @@ public class RIL extends BaseCommands implements CommandsInterface {
+         } catch (RemoteException | RuntimeException e) {
+             mRadioProxy = null;
+             riljLoge("RadioProxy getService/setResponseFunctions: " + e);
++            // rild can die between getService() and setResponseFunctions();
++            // without a retry mRadioProxy stays null until the phone process
++            // restarts. Replay the proxy-death event, which gets the service
++            // again; a successful attach in the meantime bumps the cookie and
++            // the replay is ignored.
++            mRilHandler.sendMessageDelayed(
++                    mRilHandler.obtainMessage(EVENT_RADIO_PROXY_DEAD,
++                            mRadioProxyCookie.get()),
++                    IRADIO_GET_SERVICE_DELAY_MILLIS);
+         }
+ 
+         if (mRadioProxy == null) {

@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 18:57:42 +0300
+Subject: [PATCH 2/3] audioflinger: do not hold mLock while opening a HAL
+ device
+
+openDevice() runs vendor code, and MediaTek audio HALs call back into
+AudioFlinger while they are being opened: getParameters() on the same
+thread (in-process HAL), or registerClient() over binder from the HAL
+process. Both need mLock, which loadHwModule() held for the whole open,
+so audioserver deadlocked or was aborted by TimeCheck and
+media.audio_policy never came up.
+
+Release mLock around openDevice() and check mAudioHwDevs again afterwards
+for a concurrent load of the same module. getParameters() from the
+loading thread is answered without the lock.
+---
+ services/audioflinger/AudioFlinger.cpp | 29 +++++++++++++++++++++++++-
+ services/audioflinger/AudioFlinger.h   |  2 ++
+ 2 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/services/audioflinger/AudioFlinger.cpp b/services/audioflinger/AudioFlinger.cpp
+index b884cf4..7ac4828 100644
+--- a/services/audioflinger/AudioFlinger.cpp
++++ b/services/audioflinger/AudioFlinger.cpp
+@@ -25,6 +25,7 @@
+ #include <signal.h>
+ #include <sys/time.h>
+ #include <sys/resource.h>
++#include <sys/syscall.h>
+ 
+ #include <binder/IPCThreadState.h>
+ #include <binder/IServiceManager.h>
+@@ -1306,6 +1307,13 @@ String8 AudioFlinger::getParameters(audio_io_handle_t ioHandle, const String8& k
+     ALOGVV("getParameters() io %d, keys %s, calling pid %d",
+             ioHandle, keys.string(), IPCThreadState::self()->getCallingPid());
+ 
++    // A vendor HAL may call back into AudioFlinger from the thread that is
++    // opening it in loadHwModule(). Answer without the lock; the device being
++    // opened is not in mAudioHwDevs yet, so the result would be empty anyway.
++    if (mLoadHwModuleTid.load(std::memory_order_acquire) == gettid()) {
++        return String8("");
++    }
++
+     Mutex::Autolock _l(mLock);
+ 
+     if (ioHandle == AUDIO_IO_HANDLE_NONE) {
+@@ -1789,7 +1797,11 @@ audio_module_handle_t AudioFlinger::loadHwModule(const char *name)
+         return AUDIO_MODULE_HANDLE_NONE;
+     }
+     Mutex::Autolock _l(mLock);
+-    return loadHwModule_l(name);
++    // Lets getParameters() recognise a call back from the HAL being opened.
++    mLoadHwModuleTid.store(gettid(), std::memory_order_release);
++    const audio_module_handle_t handle = loadHwModule_l(name);
++    mLoadHwModuleTid.store(0, std::memory_order_release);
++    return handle;
+ }
+ 
+ // loadHwModule_l() must be called with AudioFlinger::mLock held
+@@ -1804,12 +1816,27 @@ audio_module_handle_t AudioFlinger::loadHwModule_l(const char *name)
+ 
+     sp<DeviceHalInterface> dev;
+ 
++    // Do not hold mLock across the device open: a vendor HAL may call back
++    // into AudioFlinger (directly or over binder) while it is being opened.
++    // mAudioHwDevs is checked again below for a concurrent load.
++    mLock.unlock();
+     int rc = mDevicesFactoryHal->openDevice(name, &dev);
++    mLock.lock();
++
+     if (rc) {
+         ALOGE("loadHwModule() error %d loading module %s", rc, name);
+         return AUDIO_MODULE_HANDLE_NONE;
+     }
+ 
++    // Re-check under the re-acquired lock: another thread may have loaded this
++    // same module while we were open.
++    for (size_t i = 0; i < mAudioHwDevs.size(); i++) {
++        if (strncmp(mAudioHwDevs.valueAt(i)->moduleName(), name, strlen(name)) == 0) {
++            ALOGW("loadHwModule() module %s was loaded concurrently", name);
++            return mAudioHwDevs.keyAt(i);
++        }
++    }
++
+     mHardwareStatus = AUDIO_HW_INIT;
+     rc = dev->initCheck();
+     mHardwareStatus = AUDIO_HW_IDLE;
+diff --git a/services/audioflinger/AudioFlinger.h b/services/audioflinger/AudioFlinger.h
+index 567c5a9..6319813 100644
+--- a/services/audioflinger/AudioFlinger.h
++++ b/services/audioflinger/AudioFlinger.h
+@@ -703,6 +703,8 @@ using effect_buffer_t = int16_t;
+     };
+ 
+     mutable     Mutex                               mLock;
++                // Thread inside loadHwModule(), or 0. See getParameters().
++    mutable     std::atomic<pid_t>                  mLoadHwModuleTid{0};
+                 // protects mClients and mNotificationClients.
+                 // must be locked after mLock and ThreadBase::mLock if both must be locked
+                 // avoids acquiring AudioFlinger::mLock from inside thread loop.

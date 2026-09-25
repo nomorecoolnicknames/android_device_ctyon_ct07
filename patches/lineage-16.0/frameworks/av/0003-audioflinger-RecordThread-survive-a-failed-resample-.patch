@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 18:57:42 +0300
+Subject: [PATCH 3/3] audioflinger: RecordThread: survive a failed resample
+ buffer allocation
+
+readInputParameters_l() ignored the result of posix_memalign() and
+crashed in memset() when a HAL reported input parameters that made the
+allocation fail. That happens while AudioPolicyService opens its inputs,
+so audioserver crash-looped. Log the HAL values and retry with a buffer
+sized from the sample rate; if that fails too, capture does not work but
+audioserver stays up.
+---
+ services/audioflinger/Threads.cpp | 41 ++++++++++++++++++++++++++++---
+ 1 file changed, 38 insertions(+), 3 deletions(-)
+
+diff --git a/services/audioflinger/Threads.cpp b/services/audioflinger/Threads.cpp
+index 4993420..909e220 100644
+--- a/services/audioflinger/Threads.cpp
++++ b/services/audioflinger/Threads.cpp
+@@ -7678,9 +7678,44 @@ void AudioFlinger::RecordThread::readInputParameters_l()
+ 
+     // Over-allocate beyond mRsmpInFramesP2 to permit a HAL read past end of buffer
+     mRsmpInFramesOA = mRsmpInFramesP2 + mFrameCount - 1;
+-    (void)posix_memalign(&mRsmpInBuffer, 32, mRsmpInFramesOA * mFrameSize);
+-    // if posix_memalign fails, will segv here.
+-    memset(mRsmpInBuffer, 0, mRsmpInFramesOA * mFrameSize);
++
++    // Some legacy HALs report input parameters that make this allocation
++    // fail. Log them and fall back to a buffer sized from the sample rate
++    // instead of crashing in memset().
++    size_t rsmpInBytes = mRsmpInFramesOA * mFrameSize;
++    if (mFrameSize == 0 || posix_memalign(&mRsmpInBuffer, 32, rsmpInBytes) != 0) {
++        mRsmpInBuffer = NULL;
++    }
++
++    if (mRsmpInBuffer == NULL) {
++        ALOGE("readInputParameters_l: HAL asked for a %zu byte resample buffer and the "
++              "allocation failed. HAL reported sampleRate=%u channelCount=%u format=%#x "
++              "frameSize=%zu bufferSize=%zu, giving frameCount=%zu and rsmpInFramesOA=%zu.",
++              rsmpInBytes, mSampleRate, mChannelCount, mFormat, mFrameSize,
++              mBufferSize, (size_t)mFrameCount, (size_t)mRsmpInFramesOA);
++
++        // 20 ms of frames, 7 of them: what the formula above gives for a
++        // well-behaved HAL.
++        const uint32_t rate = mSampleRate != 0 ? mSampleRate : 48000;
++        const size_t frameSize = mFrameSize != 0 ? mFrameSize : sizeof(int16_t);
++
++        mFrameCount = rate / 50;
++        mRsmpInFrames = mFrameCount * 7;
++        mRsmpInFramesP2 = roundup(mRsmpInFrames);
++        mRsmpInFramesOA = mRsmpInFramesP2 + mFrameCount - 1;
++        rsmpInBytes = mRsmpInFramesOA * frameSize;
++
++        if (posix_memalign(&mRsmpInBuffer, 32, rsmpInBytes) != 0) {
++            mRsmpInBuffer = NULL;
++        }
++        ALOGE("readInputParameters_l: retried with frameCount=%zu rsmpInFramesOA=%zu "
++              "(%zu bytes): %s", (size_t)mFrameCount, (size_t)mRsmpInFramesOA, rsmpInBytes,
++              mRsmpInBuffer != NULL ? "ok" : "failed again, capture will not work");
++    }
++
++    if (mRsmpInBuffer != NULL) {
++        memset(mRsmpInBuffer, 0, rsmpInBytes);
++    }
+ 
+     // AudioRecord mSampleRate and mChannelCount are constant due to AudioRecord API constraints.
+     // But if thread's mSampleRate or mChannelCount changes, how will that affect active tracks?

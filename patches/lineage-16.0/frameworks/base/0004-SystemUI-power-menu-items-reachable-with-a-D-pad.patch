@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 15:22:19 +0300
+Subject: [PATCH 4/7] SystemUI: power menu items reachable with a D-pad
+
+The global actions dialog could not be used without a touchscreen. The
+outside-touch listener makes the full-screen HardwareUiLayout focusable,
+so it took the initial focus, and no D-pad key could move it: every item
+lies inside the layout, none in any direction from it. The items also had
+no background to show focus.
+
+The layout now gives focus to its children first
+(FOCUS_AFTER_DESCENDANTS), and items without a background get
+selectableItemBackground.
+---
+ .../systemui/globalactions/GlobalActionsDialog.java  | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsDialog.java b/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsDialog.java
+index 2b255f0b9..927f97357 100644
+--- a/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsDialog.java
++++ b/packages/SystemUI/src/com/android/systemui/globalactions/GlobalActionsDialog.java
+@@ -72,6 +72,7 @@ import android.telephony.TelephonyManager;
+ import android.text.TextUtils;
+ import android.util.ArraySet;
+ import android.util.Log;
++import android.util.TypedValue;
+ import android.view.ContextThemeWrapper;
+ import android.view.LayoutInflater;
+ import android.view.View;
+@@ -1716,6 +1717,10 @@ class GlobalActionsDialog implements DialogInterface.OnDismissListener,
+             }
+             mHardwareLayout = HardwareUiLayout.get(mListView);
+             mHardwareLayout.setOutsideTouchListener(view -> dismiss());
++            // The outside-touch listener makes the full-screen layout focusable, so it took the
++            // initial focus, and D-pad keys could not move it to an item: every item lies inside
++            // the layout, none in any direction from it (keypad phones without a touch panel).
++            mHardwareLayout.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+             mHardwareLayout.setHasSeparatedButton(mShouldDisplaySeparatedButton);
+             setTitle(R.string.global_actions);
+             mListView.setAccessibilityDelegate(new View.AccessibilityDelegate() {
+@@ -1732,10 +1737,17 @@ class GlobalActionsDialog implements DialogInterface.OnDismissListener,
+         private void updateList() {
+             mListView.removeAllViews();
+             mSeparatedView.removeAllViews();
++            // Items have no background of their own; give them one that shows the D-pad focus.
++            final TypedValue itemBackground = new TypedValue();
++            getContext().getTheme().resolveAttribute(
++                    android.R.attr.selectableItemBackground, itemBackground, true);
+             for (int i = 0; i < mAdapter.getCount(); i++) {
+                 ViewGroup parentView = mShouldDisplaySeparatedButton && i == mAdapter.getCount() - 1
+                         ? mSeparatedView : mListView;
+                 View v = mAdapter.getView(i, null, parentView);
++                if (v.getBackground() == null && itemBackground.resourceId != 0) {
++                    v.setBackgroundResource(itemBackground.resourceId);
++                }
+                 final int pos = i;
+                 v.setOnClickListener(view -> mClickListener.onClick(this, pos));
+                 v.setOnLongClickListener(view ->

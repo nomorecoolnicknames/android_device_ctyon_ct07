@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 18:57:42 +0300
+Subject: [PATCH 7/8] camera: provider@2.4: legacy MediaTek HAL support
+
+MediaTek HAL1 camera modules built for M/N reach framework services such
+as sensorservice through libbinder (SensorManager in
+libcam.utils.sensorlistener). On /dev/vndbinder that lookup never
+succeeds and startPreview blocks forever. These modules predate the
+binder split, so the legacy provider uses /dev/binder; HIDL is on
+hwbinder and unaffected.
+
+The MediaTek metadata providers look up per-sensor tables by name, which
+fails unless libcam.halsensor.so and libmtkcam_metastore.so are in the
+global symbol scope, so load them RTLD_GLOBAL when present.
+
+The service also joins sdcard_rw and media_rw, which the vendor HAL
+uses for its files.
+---
+ ...oid.hardware.camera.provider@2.4-service.rc |  2 +-
+ camera/provider/2.4/default/service.cpp        | 18 +++++++++++++++---
+ 2 files changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/camera/provider/2.4/default/android.hardware.camera.provider@2.4-service.rc b/camera/provider/2.4/default/android.hardware.camera.provider@2.4-service.rc
+index c919628..0057602 100644
+--- a/camera/provider/2.4/default/android.hardware.camera.provider@2.4-service.rc
++++ b/camera/provider/2.4/default/android.hardware.camera.provider@2.4-service.rc
+@@ -1,7 +1,7 @@
+ service vendor.camera-provider-2-4 /vendor/bin/hw/android.hardware.camera.provider@2.4-service
+     class hal
+     user cameraserver
+-    group audio camera input drmrpc
++    group audio camera input drmrpc sdcard_rw media_rw
+     ioprio rt 4
+     capabilities SYS_NICE
+     writepid /dev/cpuset/camera-daemon/tasks /dev/stune/top-app/tasks
+diff --git a/camera/provider/2.4/default/service.cpp b/camera/provider/2.4/default/service.cpp
+index 7eeb637..c715b17 100644
+--- a/camera/provider/2.4/default/service.cpp
++++ b/camera/provider/2.4/default/service.cpp
+@@ -20,6 +20,7 @@
+ #include <hidl/LegacySupport.h>
+ 
+ #include <binder/ProcessState.h>
++#include <dlfcn.h>
+ 
+ using android::hardware::camera::provider::V2_4::ICameraProvider;
+ using android::hardware::defaultPassthroughServiceImplementation;
+@@ -27,8 +28,19 @@ using android::hardware::defaultPassthroughServiceImplementation;
+ int main()
+ {
+     ALOGI("Camera provider Service is starting.");
+-    // The camera HAL may communicate to other vendor components via
+-    // /dev/vndbinder
+-    android::ProcessState::initWithDriver("/dev/vndbinder");
++    // Legacy MediaTek HALs reach framework services such as sensorservice
++    // through libbinder, which on /dev/vndbinder never finds them and blocks
++    // startPreview. They predate the binder split; use /dev/binder.
++    // Their per-sensor metadata lookups also need the sensor libraries in the
++    // global symbol scope.
++    for (const char* lib : {"libcam.halsensor.so", "libmtkcam_metastore.so"}) {
++        if (dlopen(lib, RTLD_NOW | RTLD_GLOBAL) == nullptr) {
++            ALOGW("%s not loaded globally: %s", lib, dlerror());
++        } else {
++            ALOGI("%s loaded into the global scope", lib);
++        }
++    }
++
++    android::ProcessState::initWithDriver("/dev/binder");
+     return defaultPassthroughServiceImplementation<ICameraProvider>("legacy/0", /*maxThreads*/ 6);
+ }

@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 01:00:38 +0300
+Subject: [PATCH 2/7] SettingsProvider: overlayable default input method
+
+First-boot defaults for Secure.DEFAULT_INPUT_METHOD and
+ENABLED_INPUT_METHODS (def_input_method, def_enable_input_methods),
+empty by default. A keypad phone without a touchscreen can make its
+keypad input method the only enabled one from a device overlay.
+---
+ packages/SettingsProvider/res/values/defaults.xml    |  5 +++++
+ .../android/providers/settings/DatabaseHelper.java   | 12 ++++++++++++
+ 2 files changed, 17 insertions(+)
+
+diff --git a/packages/SettingsProvider/res/values/defaults.xml b/packages/SettingsProvider/res/values/defaults.xml
+index e1a602b53..645868709 100644
+--- a/packages/SettingsProvider/res/values/defaults.xml
++++ b/packages/SettingsProvider/res/values/defaults.xml
+@@ -57,6 +57,11 @@
+     <bool name="def_backup_enabled">false</bool>
+     <string name="def_backup_transport" translatable="false">android/com.android.internal.backup.LocalTransport</string>
+ 
++    <!-- Default input method component and the ':'-separated enabled list,
++         written on first boot when non-empty (e.g. keypad-only devices). -->
++    <string name="def_input_method" translatable="false"></string>
++    <string name="def_enable_input_methods" translatable="false"></string>
++
+     <!-- Default value for whether or not to pulse the notification LED when there is a
+          pending notification -->
+     <bool name="def_notification_pulse">true</bool>
+diff --git a/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java b/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java
+index f7cd599b6..b48da72d0 100644
+--- a/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java
++++ b/packages/SettingsProvider/src/com/android/providers/settings/DatabaseHelper.java
+@@ -2369,6 +2369,18 @@ class DatabaseHelper extends SQLiteOpenHelper {
+             loadStringSetting(stmt, Settings.Secure.LOCATION_PROVIDERS_ALLOWED,
+                     R.string.def_location_providers_allowed);
+ 
++            // Device-overlayable default IME, e.g. for keypad-only phones.
++            // Empty by default, which keeps the AOSP behaviour.
++            final String defIme = mContext.getResources().getString(R.string.def_input_method);
++            if (!TextUtils.isEmpty(defIme)) {
++                loadSetting(stmt, Settings.Secure.DEFAULT_INPUT_METHOD, defIme);
++            }
++            final String enabledImes =
++                    mContext.getResources().getString(R.string.def_enable_input_methods);
++            if (!TextUtils.isEmpty(enabledImes)) {
++                loadSetting(stmt, Settings.Secure.ENABLED_INPUT_METHODS, enabledImes);
++            }
++
+             // Don't do this.  The SystemServer will initialize ADB_ENABLED from a
+             // persistent system property instead.
+             //loadSetting(stmt, Settings.Secure.ADB_ENABLED, 0);

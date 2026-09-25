@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 17:30:19 +0300
+Subject: [PATCH 3/4] FMRadio: powerUp passes the frequency in 10 kHz units
+
+MediaTek's FMR_pwr_up() checks the frequency against the band from the
+vendor libfmcust (for example 8750..10800, in 10 kHz units), but the JNI
+powerUp passed freq * 10, so every power-up failed with
+"FMR_pwr_up error freq: 1000". Tune and seek are left alone: FMR_tune()
+has no band check and the kernel accepts both units.
+---
+ jni/fmr/libfm_jni.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/jni/fmr/libfm_jni.cpp b/jni/fmr/libfm_jni.cpp
+index a906887..2dfc1ca 100644
+--- a/jni/fmr/libfm_jni.cpp
++++ b/jni/fmr/libfm_jni.cpp
+@@ -51,7 +51,7 @@ jboolean powerUp(JNIEnv *env, jobject thiz, jfloat freq)
+     int tmp_freq;
+ 
+     LOGI("%s, [freq=%d]\n", __func__, (int)freq);
+-    tmp_freq = (int)(freq * 10);        //Eg, 87.5 * 10 --> 875
++    tmp_freq = (int)(freq * 100);       //Eg, 87.5 * 100 --> 8750, the unit of the libfmcust band limits
+     ret = FMR_pwr_up(g_idx, tmp_freq);
+ 
+     LOGD("%s, [ret=%d]\n", __func__, ret);

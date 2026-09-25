@@ -1,0 +1,230 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Tue, 28 Jul 2026 13:42:50 +0300
+Subject: [PATCH 1/5] symbols: libgui/libui shims for Android 9
+
+Symbols that MediaTek blobs built for M/N (libgui_ext.so, the hwcomposer,
+OMX and camera libraries) import and Android 9 no longer exports:
+
+- GraphicBuffer constructors: pass the object pointer, and use the
+  current constructor with a native handle;
+- BufferItemConsumer::setName through ConsumerBase::setName;
+- GLConsumer::getCurrentBuffer() without the slot argument;
+- IDumpTunnel::asInterface (MTK libgui only), returning a null sp;
+- android::Fence constructors and destructor, inline since Pie;
+- GraphicBufferMapper::lock with the int usage of the old ABI.
+---
+ symbols/Android.mk |  7 +++-
+ symbols/gui.cpp    | 92 +++++++++++++++++++++++++++++++++++++++++-----
+ symbols/ui.cpp     | 21 +++++++++++
+ 3 files changed, 109 insertions(+), 11 deletions(-)
+
+diff --git a/symbols/Android.mk b/symbols/Android.mk
+index bdf7e8d..5cb4c12 100644
+--- a/symbols/Android.mk
++++ b/symbols/Android.mk
+@@ -5,6 +5,10 @@ LOCAL_SRC_FILES := gui.cpp
+ LOCAL_SHARED_LIBRARIES := libbinder libui libgui
+ LOCAL_MODULE := libmtkshim_gui
+ LOCAL_C_INCLUDES := frameworks/native/include
++# gui.cpp returns a struct from an extern "C" function on purpose (see
++# there).
++LOCAL_CFLAGS += -Wno-return-type-c-linkage
++LOCAL_MULTILIB := both
+ LOCAL_PROPRIETARY_MODULE := true
+ LOCAL_MODULE_TAGS := optional
+ include $(BUILD_SHARED_LIBRARY)
+@@ -29,7 +33,8 @@ include $(BUILD_SHARED_LIBRARY)
+ 
+ include $(CLEAR_VARS)
+ LOCAL_SRC_FILES := ui.cpp
+-LOCAL_SHARED_LIBRARIES := libui
++LOCAL_SHARED_LIBRARIES := libbinder libui libutils
+ LOCAL_MODULE := libmtkshim_ui
++LOCAL_MULTILIB := both
+ LOCAL_PROPRIETARY_MODULE := true
+ include $(BUILD_SHARED_LIBRARY)
+diff --git a/symbols/gui.cpp b/symbols/gui.cpp
+index 7f959d4..8dbc608 100644
+--- a/symbols/gui.cpp
++++ b/symbols/gui.cpp
+@@ -1,22 +1,26 @@
+ #include <stdint.h>
++#include <unistd.h>
+ #include <string>
+ #include <ui/GraphicBuffer.h>
+ #include <gui/BufferQueue.h>
++#include <gui/GLConsumer.h>
+ 
+ extern "C" {
+ 
+ // GraphicBuffer(uint32_t inWidth, uint32_t inHeight, PixelFormat inFormat,
+ //               uint32_t inUsage, std::string requestorName = "<Unknown>");
+ void _ZN7android13GraphicBufferC1EjjijNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE(
++    android::GraphicBuffer* self,
+     uint32_t inWidth, uint32_t inHeight, int inFormat, uint32_t inUsage,
+     std::string requestorName);
+ 
+ //libcam_utils.so
+ void _ZN7android13GraphicBufferC1Ejjij(
++    android::GraphicBuffer* self,
+     uint32_t inWidth, uint32_t inHeight, int inFormat, uint32_t inUsage) {
+   std::string requestorName = "<Shim>";
+   _ZN7android13GraphicBufferC1EjjijNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE(
+-      inWidth, inHeight, inFormat, inUsage, requestorName);
++      self, inWidth, inHeight, inFormat, inUsage, requestorName);
+ }
+ 
+ void _ZN7android11BufferQueue17createBufferQueueEPNS_2spINS_22IGraphicBufferProducerEEEPNS1_INS_22IGraphicBufferConsumerEEEb(android::sp<android::IGraphicBufferProducer>*, android::sp<android::IGraphicBufferConsumer>*, bool);
+@@ -27,16 +31,18 @@ void _ZN7android11BufferQueue17createBufferQueueEPNS_2spINS_22IGraphicBufferProd
+ }
+ 
+ void _ZN7android13GraphicBufferC1EjjijjjP13native_handleb(
+-        const native_handle_t* handle,
+-        android::GraphicBuffer::HandleWrapMethod method,
++        android::GraphicBuffer* self,
+         uint32_t width,
+         uint32_t height,
+         int format,
+         uint32_t layerCount,
+-        uint64_t usage,
+-        uint32_t stride);
++        uint32_t usage,
++        uint32_t stride,
++        native_handle_t* handle,
++        bool keepOwnership);
+ 
+ void _ZN7android13GraphicBufferC1EjjijjP13native_handleb(
++        android::GraphicBuffer* self,
+         uint32_t inWidth,
+         uint32_t inHeight,
+         int inFormat,
+@@ -45,10 +51,8 @@ void _ZN7android13GraphicBufferC1EjjijjP13native_handleb(
+         native_handle_t* inHandle,
+         bool keepOwnership)
+ {
+-    android::GraphicBuffer::HandleWrapMethod inMethod =
+-        (keepOwnership ? android::GraphicBuffer::TAKE_HANDLE : android::GraphicBuffer::WRAP_HANDLE);
+-    _ZN7android13GraphicBufferC1EjjijjjP13native_handleb(inHandle, inMethod, inWidth, inHeight,
+-        inFormat, static_cast<uint32_t>(1), static_cast<uint64_t>(inUsage), inStride);
++    _ZN7android13GraphicBufferC1EjjijjjP13native_handleb(self, inWidth, inHeight,
++        inFormat, static_cast<uint32_t>(1), inUsage, inStride, inHandle, keepOwnership);
+ }
+ 
+ #ifdef __LP64__
+@@ -65,10 +69,78 @@ void _ZN7android13GraphicBufferC1EjjijjP13native_handleb(
+     }
+ #endif
+ 
+-void _ZN7android12ConsumerBase7setNameERKNS_7String8E(const android::String8& name);
++void _ZN7android12ConsumerBase7setNameERKNS_7String8E(const android::String8&) {}
+ 
+ void _ZN7android18BufferItemConsumer7setNameERKNS_7String8E(const android::String8& name) {
+     _ZN7android12ConsumerBase7setNameERKNS_7String8E(name);
+ }
+ 
+ } //extern "C"
++
++android::sp<android::GraphicBuffer>
++legacy_GLConsumer_getCurrentBuffer(const android::GLConsumer* self)
++    __asm__("_ZNK7android10GLConsumer16getCurrentBufferEv");
++
++android::sp<android::GraphicBuffer>
++legacy_GLConsumer_getCurrentBuffer(const android::GLConsumer* self) {
++    if (self == nullptr)
++        return android::sp<android::GraphicBuffer>();
++
++    return self->getCurrentBuffer(nullptr);
++}
++
++// IDumpTunnel::asInterface: exported by MTK's libgui, imported by
++// libgui_ext.so, missing in AOSP. Returns a null sp (not that interface).
++// ShimSp has the ABI of sp<IDumpTunnel> (one pointer, non-trivial
++// destructor, returned indirectly). The C-linkage/C++-return-type warning
++// has to be suppressed with a pragma: -Werror=return-type is appended after
++// the module cflags.
++namespace { struct ShimSp { void* p; ~ShimSp() {} }; }
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Wreturn-type-c-linkage"
++extern "C" ShimSp
++_ZN7android11IDumpTunnel11asInterfaceERKNS_2spINS_7IBinderEEE(const void* /*binder*/) {
++    ShimSp r; r.p = 0; return r;   // null sp<IDumpTunnel>
++}
++#pragma clang diagnostic pop
++
++// android::Fence::~Fence(): inline since Pie, so libui.so no longer exports
++// it, but libgui_ext.so (loaded by the MTK hwcomposer) imports it. The fd is
++// at offset 4 in both layouts (LightRefBase count at 0).
++struct LegacyFence {
++    int32_t mCount;    // LightRefBase<Fence>::mCount
++    int     mFenceFd;  // offset 4 — verified by disassembly
++};
++
++extern "C" void _ZN7android5FenceD2Ev(LegacyFence* self) {
++    if (self != nullptr && self->mFenceFd != -1) {
++        close(self->mFenceFd);
++    }
++}
++
++// D1 and D2 do the same work (no vtable, no virtual bases).
++extern "C" void _ZN7android5FenceD1Ev(LegacyFence* self) {
++    _ZN7android5FenceD2Ev(self);
++}
++
++// android::Fence::Fence() / Fence(int): inline since Pie as well.
++//     Fence()      : mCount(0), mFenceFd(-1)
++//     Fence(int fd): mCount(0), mFenceFd(fd)
++extern "C" void _ZN7android5FenceC2Ev(LegacyFence* self) {
++    if (self != nullptr) {
++        self->mCount = 0;
++        self->mFenceFd = -1;
++    }
++}
++extern "C" void _ZN7android5FenceC1Ev(LegacyFence* self) {
++    _ZN7android5FenceC2Ev(self);
++}
++extern "C" void _ZN7android5FenceC2Ei(LegacyFence* self, int fenceFd) {
++    if (self != nullptr) {
++        self->mCount = 0;
++        self->mFenceFd = fenceFd;
++    }
++}
++extern "C" void _ZN7android5FenceC1Ei(LegacyFence* self, int fenceFd) {
++    _ZN7android5FenceC2Ei(self, fenceFd);
++}
+diff --git a/symbols/ui.cpp b/symbols/ui.cpp
+index ed3f609..f80eae3 100644
+--- a/symbols/ui.cpp
++++ b/symbols/ui.cpp
+@@ -2,6 +2,7 @@
+ #include <nativebase/nativebase.h>
+ #include <ui/GraphicBufferMapper.h>
+ #include <ui/Rect.h>
++#include <utils/Errors.h>
+ 
+ extern "C" {
+     void _ZN7android13GraphicBuffer4fromEP19ANativeWindowBuffer(ANativeWindowBuffer*);
+@@ -10,3 +11,23 @@ extern "C" {
+         _ZN7android13GraphicBuffer4fromEP19ANativeWindowBuffer(buffer);
+     }
+ }
++
++namespace android {
++
++status_t legacy_GraphicBufferMapper_lock(
++        GraphicBufferMapper* mapper,
++        buffer_handle_t handle,
++        int usage,
++        const Rect& bounds,
++        void** vaddr)
++    __asm__("_ZN7android19GraphicBufferMapper4lockEPK13native_handleiRKNS_4RectEPPv");
++status_t legacy_GraphicBufferMapper_lock(
++        GraphicBufferMapper* mapper,
++        buffer_handle_t handle,
++        int usage,
++        const Rect& bounds,
++        void** vaddr) {
++    return mapper->lock(handle, static_cast<uint32_t>(usage), bounds, vaddr);
++}
++
++}  // namespace android

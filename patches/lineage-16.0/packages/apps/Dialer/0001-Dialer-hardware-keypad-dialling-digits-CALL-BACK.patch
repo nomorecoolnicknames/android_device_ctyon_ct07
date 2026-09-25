@@ -1,0 +1,158 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 15:22:40 +0300
+Subject: [PATCH 1/2] Dialer: hardware keypad dialling (digits, CALL, BACK)
+
+For phones with a 12-key keypad and no touchscreen. The digits field does
+not reliably hold the focus in non-touch mode, and ENTER, the only key
+DialpadFragment.onKey() dials with, does not exist on such a phone.
+
+DialtactsActivity.dispatchKeyEvent hands digits, * and # to
+DialpadFragment.onHardwareKey, opening the dialpad first if needed:
+digits go into the number with their DTMF tone, holding 0 gives "+",
+CALL dials (or recalls the last number when nothing is typed), BACK
+deletes a digit and clears the number when held; with an empty number
+BACK is left to the activity. Keys are left alone while another text
+field (the search box) has the focus.
+---
+ .../android/dialer/app/DialtactsActivity.java | 35 +++++++++
+ .../dialer/dialpadview/DialpadFragment.java   | 73 +++++++++++++++++++
+ 2 files changed, 108 insertions(+)
+
+diff --git a/java/com/android/dialer/app/DialtactsActivity.java b/java/com/android/dialer/app/DialtactsActivity.java
+index c95abb3..b3d995c 100644
+--- a/java/com/android/dialer/app/DialtactsActivity.java
++++ b/java/com/android/dialer/app/DialtactsActivity.java
+@@ -50,6 +50,7 @@ import android.text.TextUtils;
+ import android.text.TextWatcher;
+ import android.view.DragEvent;
+ import android.view.Gravity;
++import android.view.KeyEvent;
+ import android.view.Menu;
+ import android.view.MenuItem;
+ import android.view.MotionEvent;
+@@ -1362,6 +1363,40 @@ public class DialtactsActivity extends TransactionSafeActivity
+     actionBarController.onSearchUiExited();
+   }
+ 
++  /**
++   * Keypad phones without a touch panel (CT07): digits, * and # typed on the hardware keypad open
++   * the dialpad if needed and go into the number, CALL dials, BACK deletes a digit; see {@link
++   * DialpadFragment#onHardwareKey}. Keys an input method already took never get here, and keys
++   * are left alone while another text field (the search box) has the focus.
++   */
++  @Override
++  public boolean dispatchKeyEvent(KeyEvent event) {
++    final int keyCode = event.getKeyCode();
++    final boolean dialKey =
++        (keyCode >= KeyEvent.KEYCODE_0 && keyCode <= KeyEvent.KEYCODE_9)
++            || keyCode == KeyEvent.KEYCODE_STAR
++            || keyCode == KeyEvent.KEYCODE_POUND;
++    final View focus = getCurrentFocus();
++    final boolean otherTextField = focus instanceof EditText && focus.getId() != R.id.digits;
++    if (!otherTextField
++        && !stateSaved
++        && (dialKey || keyCode == KeyEvent.KEYCODE_CALL || keyCode == KeyEvent.KEYCODE_BACK)) {
++      if (dialKey
++          && !isDialpadShown
++          && event.getAction() == KeyEvent.ACTION_DOWN
++          && event.getRepeatCount() == 0) {
++        showDialpadFragment(false);
++        getFragmentManager().executePendingTransactions();
++      }
++      if (isDialpadShown
++          && dialpadFragment != null
++          && dialpadFragment.onHardwareKey(keyCode, event)) {
++        return true;
++      }
++    }
++    return super.dispatchKeyEvent(event);
++  }
++
+   @Override
+   public void onBackPressed() {
+     PerformanceReport.recordClick(UiAction.Type.PRESS_ANDROID_BACK_BUTTON);
+diff --git a/java/com/android/dialer/dialpadview/DialpadFragment.java b/java/com/android/dialer/dialpadview/DialpadFragment.java
+index 6739288..868d11e 100644
+--- a/java/com/android/dialer/dialpadview/DialpadFragment.java
++++ b/java/com/android/dialer/dialpadview/DialpadFragment.java
+@@ -863,6 +863,79 @@ public class DialpadFragment extends Fragment
+     return false;
+   }
+ 
++  // Keypad phones without a touch panel (CT07). DialtactsActivity hands key events here while the
++  // dialpad is shown, because the digits field does not reliably hold the focus in non-touch mode
++  // and ENTER, the only key onKey() dials with, does not exist on such a phone.
++  //   0-9 * #   enter the digit with its DTMF tone; holding 0 gives "+"
++  //   CALL      dials, or brings back the last number when nothing is typed
++  //   BACK      deletes the last digit; held, clears the number; with an empty number it is left
++  //             to the activity (closes the dialpad)
++  private boolean hardwareBackLongPressed;
++
++  public boolean onHardwareKey(int keyCode, KeyEvent event) {
++    if (getView() == null || digits == null) {
++      return false;
++    }
++    final boolean down = event.getAction() == KeyEvent.ACTION_DOWN;
++    switch (keyCode) {
++      case KeyEvent.KEYCODE_0:
++        if (down && event.getRepeatCount() == 1) {
++          stopTone();
++          removePreviousDigitIfPossible('0');
++          keyPressed(KeyEvent.KEYCODE_PLUS);
++          return true;
++        }
++        // fall through
++      case KeyEvent.KEYCODE_1:
++      case KeyEvent.KEYCODE_2:
++      case KeyEvent.KEYCODE_3:
++      case KeyEvent.KEYCODE_4:
++      case KeyEvent.KEYCODE_5:
++      case KeyEvent.KEYCODE_6:
++      case KeyEvent.KEYCODE_7:
++      case KeyEvent.KEYCODE_8:
++      case KeyEvent.KEYCODE_9:
++      case KeyEvent.KEYCODE_STAR:
++      case KeyEvent.KEYCODE_POUND:
++        if (down) {
++          if (event.getRepeatCount() == 0) {
++            keyPressed(keyCode);
++          }
++        } else {
++          stopTone();
++        }
++        return true;
++      case KeyEvent.KEYCODE_CALL:
++        if (!down) {
++          handleDialButtonPressed();
++        }
++        return true;
++      case KeyEvent.KEYCODE_BACK:
++        if (down) {
++          if (event.getRepeatCount() == 0) {
++            hardwareBackLongPressed = false;
++            return !isDigitsEmpty();
++          }
++          if (!hardwareBackLongPressed && !isDigitsEmpty()) {
++            hardwareBackLongPressed = true;
++            clearDialpad();
++          }
++          return true;
++        }
++        if (hardwareBackLongPressed) {
++          hardwareBackLongPressed = false;
++          return true;
++        }
++        if (isDigitsEmpty() || event.isCanceled()) {
++          return false;
++        }
++        keyPressed(KeyEvent.KEYCODE_DEL);
++        return true;
++      default:
++        return false;
++    }
++  }
++
+   /**
+    * When a key is pressed, we start playing DTMF tone, do vibration, and enter the digit
+    * immediately. When a key is released, we stop the tone. Note that the "key press" event will be

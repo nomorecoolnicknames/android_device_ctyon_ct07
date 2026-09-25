@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 24 Sep 2026 15:22:18 +0300
+Subject: [PATCH 3/7] PhoneWindowManager: ENDCALL wakes the device when it is
+ asleep
+
+On a keypad phone without a power button the red ENDCALL key is the only
+system key: it hangs up, goes home and then to sleep
+(END_BUTTON_BEHAVIOR), and has to wake the screen too. Up to N the key
+layout gave it the WAKE flag; since O KeyLayoutMap knows only VIRTUAL,
+FUNCTION and GESTURE and rejects a file that uses WAKE, and ENDCALL is not
+a KeyEvent wake key, so with the screen off nothing woke the phone.
+
+A down press while not interactive is now a wake key. The hangup and the
+long-press power menu are unchanged; the down that wakes marks the key
+handled, so its up neither goes home nor puts the device back to sleep.
+---
+ .../java/com/android/server/policy/PhoneWindowManager.java | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/services/core/java/com/android/server/policy/PhoneWindowManager.java b/services/core/java/com/android/server/policy/PhoneWindowManager.java
+index ef8fb37aa..e35a5f3d5 100644
+--- a/services/core/java/com/android/server/policy/PhoneWindowManager.java
++++ b/services/core/java/com/android/server/policy/PhoneWindowManager.java
+@@ -6909,6 +6909,13 @@ public class PhoneWindowManager implements WindowManagerPolicy {
+                     } else {
+                         mEndCallKeyHandled = true;
+                     }
++                    // On a keypad phone the red key is the only system key, so
++                    // it has to wake the screen as well. Up to N the key layout
++                    // said so with the WAKE flag; O and later reject that flag
++                    // (KeyLayoutMap knows VIRTUAL/FUNCTION/GESTURE only).
++                    if (!interactive) {
++                        isWakeKey = true;
++                    }
+                 } else {
+                     if (!mEndCallKeyHandled) {
+                         mHandler.removeCallbacks(mEndCallLongPress);

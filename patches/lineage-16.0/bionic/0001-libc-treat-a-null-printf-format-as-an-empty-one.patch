@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 18:57:42 +0300
+Subject: [PATCH] libc: treat a null printf format as an empty one
+
+MediaTek vendor libraries built for older releases call
+snprintf(buf, n, NULL, ...). Older bionic returned an empty string for
+that; this implementation dereferences the format and the process dies.
+---
+ libc/stdio/vfprintf.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/libc/stdio/vfprintf.cpp b/libc/stdio/vfprintf.cpp
+index 9182880..513a183 100644
+--- a/libc/stdio/vfprintf.cpp
++++ b/libc/stdio/vfprintf.cpp
+@@ -43,6 +43,12 @@
+ #include "printf_common.h"
+ 
+ int FUNCTION_NAME(FILE* fp, const CHAR_TYPE* fmt0, va_list ap) {
++  // Some MediaTek vendor blobs pass a null format, which older bionic
++  // treated as an empty one. An array, not a literal: this file is also
++  // compiled for wide characters.
++  static const CHAR_TYPE kEmptyFormat[1] = { 0 };
++  if (fmt0 == nullptr) fmt0 = kEmptyFormat;
++
+   int n, n2;
+   CHAR_TYPE* cp;            /* handy char pointer (short term usage) */
+   CHAR_TYPE sign;           /* sign prefix (' ', '+', '-', or \0) */

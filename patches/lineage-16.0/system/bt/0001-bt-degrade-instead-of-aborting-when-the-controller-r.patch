@@ -1,0 +1,583 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Wed, 29 Jul 2026 15:09:54 +0300
+Subject: [PATCH] bt: degrade instead of aborting when the controller refuses a
+ command
+
+Some MediaTek combo controllers refuse commands the stack assumes are
+always granted: Read_Local_Extended_Features page 1 (status 0x30),
+LE_Read_Maximum_Data_Length and others. The parsers CHECK-aborted (or
+dereferenced a NULL stream), so com.android.bluetooth crash-looped.
+
+- The parsers return false on a refusal and leave their outputs alone;
+  controller start-up keeps the pages it could read, drops BLE only when
+  a required BLE read is refused, and leaves optional capabilities at
+  their defaults.
+- LE support is derived from features page 0 and an accepted
+  Write_LE_Host_Support when page 1 cannot be read.
+- A command awaited through a future is completed by a Command Status
+  reply instead of waiting forever.
+- Data length extension is dropped when the controller refuses its
+  commands.
+---
+ device/src/controller.cc        | 150 +++++++++++++++++++++++++-------
+ hci/include/hci_packet_parser.h |  27 +++---
+ hci/src/hci_layer.cc            |  15 +++-
+ hci/src/hci_packet_parser.cc    | 104 +++++++++++++++++-----
+ 4 files changed, 229 insertions(+), 67 deletions(-)
+
+diff --git a/device/src/controller.cc b/device/src/controller.cc
+index 2cf024f..17b09c0 100644
+--- a/device/src/controller.cc
++++ b/device/src/controller.cc
+@@ -78,6 +78,9 @@ static uint8_t number_of_local_supported_codecs = 0;
+ 
+ static bool readable;
+ static bool ble_supported;
++/* LE Supported (Controller) in features page 0 and Write_LE_Host_Support
++ * accepted: what the LE Supported (Host) bit of page 1 would report. */
++static bool le_host_support_confirmed;
+ static bool ble_offload_features_supported;
+ static bool simple_pairing_supported;
+ static bool secure_connections_supported;
+@@ -129,9 +132,10 @@ static future_t* start_up(void) {
+   uint8_t page_number = 0;
+   response = AWAIT_COMMAND(
+       packet_factory->make_read_local_extended_features(page_number));
+-  packet_parser->parse_read_local_extended_features_response(
++  /* Page 0 is mandatory. */
++  CHECK(packet_parser->parse_read_local_extended_features_response(
+       response, &page_number, &last_features_classic_page_index,
+-      features_classic, MAX_FEATURES_CLASSIC_PAGE_COUNT);
++      features_classic, MAX_FEATURES_CLASSIC_PAGE_COUNT));
+ 
+   CHECK(page_number == 0);
+   page_number++;
+@@ -148,6 +152,7 @@ static future_t* start_up(void) {
+     packet_parser->parse_generic_command_complete(response);
+   }
+ 
++  le_host_support_confirmed = false;
+   if (HCI_LE_SPT_SUPPORTED(features_classic[0].as_array)) {
+     uint8_t simultaneous_le_host =
+         HCI_SIMUL_LE_BREDR_SUPPORTED(features_classic[0].as_array)
+@@ -156,7 +161,13 @@ static future_t* start_up(void) {
+     response = AWAIT_COMMAND(packet_factory->make_ble_write_host_support(
+         BTM_BLE_HOST_SUPPORT, simultaneous_le_host));
+ 
+-    packet_parser->parse_generic_command_complete(response);
++    /* Checked: ble_supported falls back to it when page 1 is unreadable. */
++    le_host_support_confirmed =
++        packet_parser->parse_generic_command_complete(response);
++    if (!le_host_support_confirmed) {
++      LOG(WARNING) << "controller refused Write_LE_Host_Support; "
++                      "BLE unavailable unless ext features page 1 is readable";
++    }
+ 
+     // If we modified the BT_HOST_SUPPORT, we will need ext. feat. page 1
+     if (last_features_classic_page_index < 1)
+@@ -169,9 +180,15 @@ static future_t* start_up(void) {
+          page_number < MAX_FEATURES_CLASSIC_PAGE_COUNT) {
+     response = AWAIT_COMMAND(
+         packet_factory->make_read_local_extended_features(page_number));
+-    packet_parser->parse_read_local_extended_features_response(
+-        response, &page_number, &last_features_classic_page_index,
+-        features_classic, MAX_FEATURES_CLASSIC_PAGE_COUNT);
++    /* Page 1 is requested whenever the controller supports LE, whatever
++     * maximum page it reported. Some MediaTek controllers refuse it (0x30);
++     * keep the pages that were read instead of aborting. */
++    if (!packet_parser->parse_read_local_extended_features_response(
++            response, &page_number, &last_features_classic_page_index,
++            features_classic, MAX_FEATURES_CLASSIC_PAGE_COUNT)) {
++      last_features_classic_page_index = page_number - 1;
++      break;
++    }
+ 
+     page_number++;
+   }
+@@ -194,61 +211,130 @@ static future_t* start_up(void) {
+ 
+   ble_supported = last_features_classic_page_index >= 1 &&
+                   HCI_LE_HOST_SUPPORTED(features_classic[1].as_array);
++
++  /* The LE Supported (Host) bit of page 1 only echoes our
++   * Write_LE_Host_Support. When page 1 is unreadable, derive it from page 0
++   * and the accepted write instead. Controllers that answer page 1 are not
++   * affected, and last_features_classic_page_index is left alone. */
++  if (!ble_supported && le_host_support_confirmed) {
++    LOG(WARNING) << "ext features page 1 unreadable; deriving BLE "
++                    "support from page 0 LE Supported (Controller) + accepted "
++                    "Write_LE_Host_Support instead";
++    ble_supported = true;
++  }
++
+   if (ble_supported) {
++    /* The four reads below are required for BLE. If the controller refuses
++     * one, continue BR/EDR-only instead of aborting. */
++    bool ble_setup_ok = true;
++
+     // Request the ble white list size next
+     response = AWAIT_COMMAND(packet_factory->make_ble_read_white_list_size());
+-    packet_parser->parse_ble_read_white_list_size_response(
+-        response, &ble_white_list_size);
++    if (!packet_parser->parse_ble_read_white_list_size_response(
++            response, &ble_white_list_size)) {
++      LOG(ERROR) << "controller refused LE_Read_White_List_Size";
++      ble_setup_ok = false;
++    }
+ 
+     // Request the ble buffer size next
+-    response = AWAIT_COMMAND(packet_factory->make_ble_read_buffer_size());
+-    packet_parser->parse_ble_read_buffer_size_response(
+-        response, &acl_data_size_ble, &acl_buffer_count_ble);
+-
+-    // Response of 0 indicates ble has the same buffer size as classic
+-    if (acl_data_size_ble == 0) acl_data_size_ble = acl_data_size_classic;
++    if (ble_setup_ok) {
++      response = AWAIT_COMMAND(packet_factory->make_ble_read_buffer_size());
++      if (!packet_parser->parse_ble_read_buffer_size_response(
++              response, &acl_data_size_ble, &acl_buffer_count_ble)) {
++        LOG(ERROR) << "controller refused LE_Read_Buffer_Size";
++        ble_setup_ok = false;
++      }
++
++      // Response of 0 indicates ble has the same buffer size as classic
++      if (acl_data_size_ble == 0) acl_data_size_ble = acl_data_size_classic;
++    }
+ 
+     // Request the ble supported states next
+-    response = AWAIT_COMMAND(packet_factory->make_ble_read_supported_states());
+-    packet_parser->parse_ble_read_supported_states_response(
+-        response, ble_supported_states, sizeof(ble_supported_states));
++    if (ble_setup_ok) {
++      response = AWAIT_COMMAND(packet_factory->make_ble_read_supported_states());
++      if (!packet_parser->parse_ble_read_supported_states_response(
++              response, ble_supported_states, sizeof(ble_supported_states))) {
++        LOG(ERROR) << "controller refused LE_Read_Supported_States";
++        ble_setup_ok = false;
++      }
++    }
+ 
+     // Request the ble supported features next
+-    response =
+-        AWAIT_COMMAND(packet_factory->make_ble_read_local_supported_features());
+-    packet_parser->parse_ble_read_local_supported_features_response(
+-        response, &features_ble);
++    if (ble_setup_ok) {
++      response = AWAIT_COMMAND(
++          packet_factory->make_ble_read_local_supported_features());
++      if (!packet_parser->parse_ble_read_local_supported_features_response(
++              response, &features_ble)) {
++        LOG(ERROR)
++            << "controller refused LE_Read_Local_Supported_Features";
++        ble_setup_ok = false;
++      }
++    }
++
++    if (!ble_setup_ok) {
++      LOG(ERROR) << "BLE setup refused by controller; falling back "
++                    "to BR/EDR-only";
++      ble_supported = false;
++    }
++  }
+ 
++  if (ble_supported) {
++    /* The reads below are optional, each gated on a feature bit; a refusal
++     * leaves that capability at its default. */
+     if (HCI_LE_ENHANCED_PRIVACY_SUPPORTED(features_ble.as_array)) {
+       response =
+           AWAIT_COMMAND(packet_factory->make_ble_read_resolving_list_size());
+-      packet_parser->parse_ble_read_resolving_list_size_response(
+-          response, &ble_resolving_list_max_size);
++      if (!packet_parser->parse_ble_read_resolving_list_size_response(
++              response, &ble_resolving_list_max_size)) {
++        LOG(WARNING)
++            << "controller refused LE_Read_Resolving_List_Size";
++        ble_resolving_list_max_size = 0;
++      }
+     }
+ 
+     if (HCI_LE_DATA_LEN_EXT_SUPPORTED(features_ble.as_array)) {
+       response =
+           AWAIT_COMMAND(packet_factory->make_ble_read_maximum_data_length());
+-      packet_parser->parse_ble_read_maximum_data_length_response(
+-          response, &ble_supported_max_tx_octets, &ble_supported_max_tx_time,
+-          &ble_supported_max_rx_octets, &ble_supported_max_rx_time);
++      if (!packet_parser->parse_ble_read_maximum_data_length_response(
++              response, &ble_supported_max_tx_octets,
++              &ble_supported_max_tx_time, &ble_supported_max_rx_octets,
++              &ble_supported_max_rx_time)) {
++        LOG(WARNING)
++            << "controller refused LE_Read_Maximum_Data_Length";
++        /* The controller advertises data length extension but refuses its
++         * commands: clear the bit (HCI_LE_DATA_LEN_EXT_SUPPORTED) so that
++         * btm does not send LE_Set_Data_Length on every connection. */
++        features_ble.as_array[0] &= ~0x20;
++      }
++    }
+ 
++    if (HCI_LE_DATA_LEN_EXT_SUPPORTED(features_ble.as_array)) {
+       response = AWAIT_COMMAND(
+           packet_factory->make_ble_read_suggested_default_data_length());
+-      packet_parser->parse_ble_read_suggested_default_data_length_response(
+-          response, &ble_suggested_default_data_length);
++      if (!packet_parser->parse_ble_read_suggested_default_data_length_response(
++              response, &ble_suggested_default_data_length)) {
++        LOG(WARNING) << "controller refused "
++                        "LE_Read_Suggested_Default_Data_Length";
++      }
+     }
+ 
+     if (HCI_LE_EXTENDED_ADVERTISING_SUPPORTED(features_ble.as_array)) {
+       response = AWAIT_COMMAND(
+           packet_factory->make_ble_read_maximum_advertising_data_length());
+-      packet_parser->parse_ble_read_maximum_advertising_data_length(
+-          response, &ble_maxium_advertising_data_length);
++      if (!packet_parser->parse_ble_read_maximum_advertising_data_length(
++              response, &ble_maxium_advertising_data_length)) {
++        LOG(WARNING) << "controller refused "
++                        "LE_Read_Maximum_Advertising_Data_Length";
++        ble_maxium_advertising_data_length = 31;
++      }
+ 
+       response = AWAIT_COMMAND(
+           packet_factory->make_ble_read_number_of_supported_advertising_sets());
+-      packet_parser->parse_ble_read_number_of_supported_advertising_sets(
+-          response, &ble_number_of_supported_advertising_sets);
++      if (!packet_parser->parse_ble_read_number_of_supported_advertising_sets(
++              response, &ble_number_of_supported_advertising_sets)) {
++        LOG(WARNING) << "controller refused "
++                        "LE_Read_Number_Of_Supported_Advertising_Sets";
++      }
+     } else {
+       /* If LE Excended Advertising is not supported, use the default value */
+       ble_maxium_advertising_data_length = 31;
+diff --git a/hci/include/hci_packet_parser.h b/hci/include/hci_packet_parser.h
+index 06af557..9ad9b83 100644
+--- a/hci/include/hci_packet_parser.h
++++ b/hci/include/hci_packet_parser.h
+@@ -27,7 +27,8 @@
+ #include "version.h"
+ 
+ typedef struct {
+-  void (*parse_generic_command_complete)(BT_HDR* response);
++  // Returns false if the controller answered with a non-zero status.
++  bool (*parse_generic_command_complete)(BT_HDR* response);
+ 
+   void (*parse_read_buffer_size_response)(BT_HDR* response,
+                                           uint16_t* data_size_ptr,
+@@ -43,40 +44,44 @@ typedef struct {
+       BT_HDR* response, uint8_t* supported_commands_ptr,
+       size_t supported_commands_length);
+ 
+-  void (*parse_read_local_extended_features_response)(
++  // Returns false if the controller answered with a non-zero status (e.g. a
++  // page it does not implement).
++  bool (*parse_read_local_extended_features_response)(
+       BT_HDR* response, uint8_t* page_number_ptr, uint8_t* max_page_number_ptr,
+       bt_device_features_t* feature_pages, size_t feature_pages_count);
+ 
+-  void (*parse_ble_read_white_list_size_response)(BT_HDR* response,
++  // The BLE setup parsers below return false if the controller answered with
++  // a non-zero status, leaving the output parameters untouched.
++  bool (*parse_ble_read_white_list_size_response)(BT_HDR* response,
+                                                   uint8_t* white_list_size_ptr);
+ 
+-  void (*parse_ble_read_buffer_size_response)(BT_HDR* response,
++  bool (*parse_ble_read_buffer_size_response)(BT_HDR* response,
+                                               uint16_t* data_size_ptr,
+                                               uint8_t* acl_buffer_count_ptr);
+ 
+-  void (*parse_ble_read_supported_states_response)(
++  bool (*parse_ble_read_supported_states_response)(
+       BT_HDR* response, uint8_t* supported_states,
+       size_t supported_states_size);
+ 
+-  void (*parse_ble_read_local_supported_features_response)(
++  bool (*parse_ble_read_local_supported_features_response)(
+       BT_HDR* response, bt_device_features_t* supported_features);
+ 
+-  void (*parse_ble_read_resolving_list_size_response)(
++  bool (*parse_ble_read_resolving_list_size_response)(
+       BT_HDR* response, uint8_t* resolving_list_size_ptr);
+ 
+-  void (*parse_ble_read_suggested_default_data_length_response)(
++  bool (*parse_ble_read_suggested_default_data_length_response)(
+       BT_HDR* response, uint16_t* ble_default_packet_length_ptr);
+ 
+-  void (*parse_ble_read_maximum_data_length_response)(
++  bool (*parse_ble_read_maximum_data_length_response)(
+       BT_HDR* response, uint16_t* ble_supported_max_tx_octets,
+       uint16_t* ble_supported_max_tx_time,
+       uint16_t* ble_supported_max_rx_octets,
+       uint16_t* ble_supported_max_rx_time);
+ 
+-  void (*parse_ble_read_maximum_advertising_data_length)(
++  bool (*parse_ble_read_maximum_advertising_data_length)(
+       BT_HDR* response, uint16_t* ble_maximum_advertising_data_length_ptr);
+ 
+-  void (*parse_ble_read_number_of_supported_advertising_sets)(
++  bool (*parse_ble_read_number_of_supported_advertising_sets)(
+       BT_HDR* response, uint8_t* ble_number_of_supported_advertising_sets_ptr);
+ 
+   void (*parse_read_local_supported_codecs_response)(
+diff --git a/hci/src/hci_layer.cc b/hci/src/hci_layer.cc
+index 53db452..6248bf8 100644
+--- a/hci/src/hci_layer.cc
++++ b/hci/src/hci_layer.cc
+@@ -654,6 +654,12 @@ static bool filter_incoming_event(BT_HDR* packet) {
+       if (wait_entry->status_callback)
+         wait_entry->status_callback(status, wait_entry->command,
+                                     wait_entry->context);
++      else if (wait_entry->complete_future)
++        /* A command awaited through a future has no status callback. When
++         * the controller answers it with Command Status (e.g. "Unknown HCI
++         * Command"), complete the future with that event instead of leaving
++         * it waiting forever; the parser treats it as a refusal. */
++        future_ready(wait_entry->complete_future, packet);
+     }
+ 
+     goto intercepted;
+@@ -672,9 +678,12 @@ static bool filter_incoming_event(BT_HDR* packet) {
+ 
+ intercepted:
+   if (wait_entry) {
+-    // If it has a callback, it's responsible for freeing the packet
+-    if (event_code == HCI_COMMAND_STATUS_EVT ||
+-        (!wait_entry->complete_callback && !wait_entry->complete_future))
++    // If it has a callback, it's responsible for freeing the packet. A status
++    // event handed to a complete_future (see above) is freed by the awaiting
++    // parser, exactly like a command complete event would be.
++    if (event_code == HCI_COMMAND_STATUS_EVT
++            ? (wait_entry->status_callback || !wait_entry->complete_future)
++            : (!wait_entry->complete_callback && !wait_entry->complete_future))
+       buffer_allocator->free(packet);
+ 
+     // If it has a callback, it's responsible for freeing the command
+diff --git a/hci/src/hci_packet_parser.cc b/hci/src/hci_packet_parser.cc
+index 3f4e46c..9644097 100644
+--- a/hci/src/hci_packet_parser.cc
++++ b/hci/src/hci_packet_parser.cc
+@@ -35,11 +35,13 @@ static uint8_t* read_command_complete_header(BT_HDR* response,
+                                              command_opcode_t expected_opcode,
+                                              size_t minimum_bytes_after);
+ 
+-static void parse_generic_command_complete(BT_HDR* response) {
+-  read_command_complete_header(response, NO_OPCODE_CHECKING,
+-                               0 /* bytes after */);
++static bool parse_generic_command_complete(BT_HDR* response) {
++  /* Report the status: controller.cc relies on Write_LE_Host_Support. */
++  bool succeeded = read_command_complete_header(response, NO_OPCODE_CHECKING,
++                                                0 /* bytes after */) != NULL;
+ 
+   buffer_allocator->free(response);
++  return succeeded;
+ }
+ 
+ static void parse_read_buffer_size_response(BT_HDR* response,
+@@ -122,13 +124,17 @@ static void parse_read_local_supported_commands_response(
+   buffer_allocator->free(response);
+ }
+ 
+-static void parse_read_local_extended_features_response(
++static bool parse_read_local_extended_features_response(
+     BT_HDR* response, uint8_t* page_number_ptr, uint8_t* max_page_number_ptr,
+     bt_device_features_t* feature_pages, size_t feature_pages_count) {
+   uint8_t* stream = read_command_complete_header(
+       response, HCI_READ_LOCAL_EXT_FEATURES,
+       2 + sizeof(bt_device_features_t) /* bytes after */);
+-  CHECK(stream != NULL);
++  /* NULL: the controller refused the command (non-zero status). */
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+ 
+   STREAM_TO_UINT8(*page_number_ptr, stream);
+   STREAM_TO_UINT8(*max_page_number_ptr, stream);
+@@ -138,103 +144,148 @@ static void parse_read_local_extended_features_response(
+                   (int)sizeof(bt_device_features_t));
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+-static void parse_ble_read_white_list_size_response(
++/* The parsers below return false when the controller refused the command
++ * and leave the output parameters untouched. */
++
++static bool parse_ble_read_white_list_size_response(
+     BT_HDR* response, uint8_t* white_list_size_ptr) {
+   uint8_t* stream = read_command_complete_header(
+       response, HCI_BLE_READ_WHITE_LIST_SIZE, 1 /* byte after */);
+-  CHECK(stream != NULL);
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+   STREAM_TO_UINT8(*white_list_size_ptr, stream);
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+-static void parse_ble_read_buffer_size_response(BT_HDR* response,
++static bool parse_ble_read_buffer_size_response(BT_HDR* response,
+                                                 uint16_t* data_size_ptr,
+                                                 uint8_t* acl_buffer_count_ptr) {
+   uint8_t* stream = read_command_complete_header(
+       response, HCI_BLE_READ_BUFFER_SIZE, 3 /* bytes after */);
+-  CHECK(stream != NULL);
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+   STREAM_TO_UINT16(*data_size_ptr, stream);
+   STREAM_TO_UINT8(*acl_buffer_count_ptr, stream);
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+-static void parse_ble_read_supported_states_response(
++static bool parse_ble_read_supported_states_response(
+     BT_HDR* response, uint8_t* supported_states, size_t supported_states_size) {
+   uint8_t* stream =
+       read_command_complete_header(response, HCI_BLE_READ_SUPPORTED_STATES,
+                                    supported_states_size /* bytes after */);
+-  CHECK(stream != NULL);
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+   STREAM_TO_ARRAY(supported_states, stream, (int)supported_states_size);
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+-static void parse_ble_read_local_supported_features_response(
++static bool parse_ble_read_local_supported_features_response(
+     BT_HDR* response, bt_device_features_t* supported_features) {
+   uint8_t* stream = read_command_complete_header(
+       response, HCI_BLE_READ_LOCAL_SPT_FEAT,
+       sizeof(bt_device_features_t) /* bytes after */);
+-  CHECK(stream != NULL);
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+   STREAM_TO_ARRAY(supported_features->as_array, stream,
+                   (int)sizeof(bt_device_features_t));
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+-static void parse_ble_read_resolving_list_size_response(
++static bool parse_ble_read_resolving_list_size_response(
+     BT_HDR* response, uint8_t* resolving_list_size_ptr) {
+   uint8_t* stream = read_command_complete_header(
+       response, HCI_BLE_READ_RESOLVING_LIST_SIZE, 1 /* bytes after */);
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+   STREAM_TO_UINT8(*resolving_list_size_ptr, stream);
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+-static void parse_ble_read_suggested_default_data_length_response(
++static bool parse_ble_read_suggested_default_data_length_response(
+     BT_HDR* response, uint16_t* ble_default_packet_length_ptr) {
+   uint8_t* stream = read_command_complete_header(
+       response, HCI_BLE_READ_DEFAULT_DATA_LENGTH, 2 /* bytes after */);
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+   STREAM_TO_UINT16(*ble_default_packet_length_ptr, stream);
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+-static void parse_ble_read_maximum_data_length_response(
++static bool parse_ble_read_maximum_data_length_response(
+     BT_HDR* response, uint16_t* ble_supported_max_tx_octets,
+     uint16_t* ble_supported_max_tx_time, uint16_t* ble_supported_max_rx_octets,
+     uint16_t* ble_supported_max_rx_time) {
+   uint8_t* stream = read_command_complete_header(
+       response, HCI_BLE_READ_MAXIMUM_DATA_LENGTH, 8 /* bytes after */);
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+   STREAM_TO_UINT16(*ble_supported_max_tx_octets, stream);
+   STREAM_TO_UINT16(*ble_supported_max_tx_time, stream);
+   STREAM_TO_UINT16(*ble_supported_max_rx_octets, stream);
+   STREAM_TO_UINT16(*ble_supported_max_rx_time, stream);
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+-static void parse_ble_read_maximum_advertising_data_length(
++static bool parse_ble_read_maximum_advertising_data_length(
+     BT_HDR* response, uint16_t* ble_maximum_advertising_data_length_ptr) {
+   uint8_t* stream = read_command_complete_header(
+       response, HCI_LE_READ_MAXIMUM_ADVERTISING_DATA_LENGTH,
+       2 /* bytes after */);
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+   STREAM_TO_UINT16(*ble_maximum_advertising_data_length_ptr, stream);
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+-static void parse_ble_read_number_of_supported_advertising_sets(
++static bool parse_ble_read_number_of_supported_advertising_sets(
+     BT_HDR* response, uint8_t* ble_number_of_supported_advertising_sets_ptr) {
+   uint8_t* stream = read_command_complete_header(
+       response, HCI_LE_READ_NUMBER_OF_SUPPORTED_ADVERTISING_SETS,
+       1 /* bytes after */);
++  if (stream == NULL) {
++    buffer_allocator->free(response);
++    return false;
++  }
+   STREAM_TO_UINT8(*ble_number_of_supported_advertising_sets_ptr, stream);
+ 
+   buffer_allocator->free(response);
++  return true;
+ }
+ 
+ // Internal functions
+@@ -253,9 +304,20 @@ static uint8_t* read_command_complete_header(BT_HDR* response,
+   const size_t parameter_bytes_we_read_here = 4;
+ 
+   // Check the event header values against what we expect
+-  CHECK(event_code == HCI_COMMAND_COMPLETE_EVT);
+-  CHECK(parameter_length >=
+-        (parameter_bytes_we_read_here + minimum_bytes_after));
++  /* A Command Status event or a short payload means the controller
++   * refused the command (see hci_layer.cc). */
++  if (event_code != HCI_COMMAND_COMPLETE_EVT) {
++    LOG_ERROR(LOG_TAG, "%s: event code 0x%02x is not command complete",
++              __func__, event_code);
++    return NULL;
++  }
++  if (parameter_length <
++      (parameter_bytes_we_read_here + minimum_bytes_after)) {
++    LOG_ERROR(LOG_TAG, "%s: parameter length %d too short for %zu bytes",
++              __func__, parameter_length,
++              parameter_bytes_we_read_here + minimum_bytes_after);
++    return NULL;
++  }
+ 
+   // Read the command complete header
+   command_opcode_t opcode;

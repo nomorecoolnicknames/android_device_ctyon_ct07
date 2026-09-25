@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 12:00:00 +0300
+Subject: [PATCH 7/7] SystemUI: recents: reach "Clear all" with the D-pad in
+ the low-RAM layout
+
+The low-RAM "Clear all" button is hit-tested by the touch handler and
+only shown after a touch scroll, so it could not be reached without a
+touch panel.
+
+DOWN from the newest task now shows the button and focuses it, UP goes
+back to the task, and OK dismisses all tasks.
+---
+ .../systemui/recents/RecentsActivity.java     | 13 +++++--
+ .../systemui/recents/views/RecentsView.java   | 36 +++++++++++++++++++
+ 2 files changed, 47 insertions(+), 2 deletions(-)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/recents/RecentsActivity.java b/packages/SystemUI/src/com/android/systemui/recents/RecentsActivity.java
+index 97627b18c..43d1aae14 100644
+--- a/packages/SystemUI/src/com/android/systemui/recents/RecentsActivity.java
++++ b/packages/SystemUI/src/com/android/systemui/recents/RecentsActivity.java
+@@ -81,6 +81,7 @@ import com.android.systemui.recents.events.ui.ShowIncompatibleAppOverlayEvent;
+ import com.android.systemui.recents.events.ui.StackViewScrolledEvent;
+ import com.android.systemui.recents.events.ui.TaskViewDismissedEvent;
+ import com.android.systemui.recents.events.ui.UserInteractionEvent;
++import com.android.systemui.recents.events.ui.DismissAllTaskViewsEvent;
+ import com.android.systemui.recents.events.ui.focus.DismissFocusedTaskViewEvent;
+ import com.android.systemui.recents.events.ui.focus.FocusNextTaskViewEvent;
+ import com.android.systemui.recents.events.ui.focus.FocusPreviousTaskViewEvent;
+@@ -638,6 +639,9 @@ public class RecentsActivity extends Activity implements ViewTreeObserver.OnPreD
+             case KeyEvent.KEYCODE_DPAD_DOWN:
+             case KeyEvent.KEYCODE_DPAD_LEFT:
+             case KeyEvent.KEYCODE_DPAD_RIGHT: {
++                if (mRecentsView.navigateStackActionButton(keyCode)) {
++                    return true;
++                }
+                 final Direction direction = NavigateTaskViewEvent.getDirectionFromKeyCode(keyCode);
+                 EventBus.getDefault().send(new NavigateTaskViewEvent(direction));
+                 return true;
+@@ -661,7 +665,8 @@ public class RecentsActivity extends Activity implements ViewTreeObserver.OnPreD
+ 
+     @Override
+     public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+-        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
++        if ((keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
++                && !mRecentsView.isStackActionButtonFocused()) {
+             EventBus.getDefault().send(new DismissFocusedTaskViewEvent());
+             return true;
+         }
+@@ -673,7 +678,11 @@ public class RecentsActivity extends Activity implements ViewTreeObserver.OnPreD
+         if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+             // A handled long press cancels the up.
+             if (event.isTracking() && !event.isCanceled()) {
+-                mRecentsView.launchFocusedTask(0 /* logEvent */);
++                if (mRecentsView.isStackActionButtonFocused()) {
++                    EventBus.getDefault().send(new DismissAllTaskViewsEvent());
++                } else {
++                    mRecentsView.launchFocusedTask(0 /* logEvent */);
++                }
+             }
+             return true;
+         }
+diff --git a/packages/SystemUI/src/com/android/systemui/recents/views/RecentsView.java b/packages/SystemUI/src/com/android/systemui/recents/views/RecentsView.java
+index e3ed1aaa5..1ce055e08 100644
+--- a/packages/SystemUI/src/com/android/systemui/recents/views/RecentsView.java
++++ b/packages/SystemUI/src/com/android/systemui/recents/views/RecentsView.java
+@@ -39,6 +39,7 @@ import android.util.ArraySet;
+ import android.util.AttributeSet;
+ import android.util.Log;
+ import android.util.MathUtils;
++import android.view.KeyEvent;
+ import android.view.LayoutInflater;
+ import android.view.MotionEvent;
+ import android.view.View;
+@@ -919,6 +920,41 @@ public class RecentsView extends FrameLayout {
+         return mStackActionButton;
+     }
+ 
++    /**
++     * Keypad phones without a touch panel: in the low-RAM list, DOWN from the newest task moves
++     * the focus to "Clear all" (shown if hidden) and UP moves it back. Returns whether the key was
++     * used.
++     */
++    public boolean navigateStackActionButton(int keyCode) {
++        if (!Recents.getConfiguration().isLowRamDevice || mTaskStackView == null) {
++            return false;
++        }
++        final int newest = getStack().getTaskCount() - 1;
++        if (mStackActionButton.isFocused()) {
++            if (keyCode == KeyEvent.KEYCODE_DPAD_UP && newest >= 0) {
++                mTaskStackView.setFocusedTask(newest, true /* scrollToTask */,
++                        true /* requestViewFocus */);
++            }
++            return true;
++        }
++        final Task focusedTask = mTaskStackView.getFocusedTask();
++        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && focusedTask != null
++                && getStack().indexOfTask(focusedTask) == newest) {
++            showStackActionButton(SHOW_STACK_ACTION_BUTTON_DURATION, false /* translate */);
++            mStackActionButton.setFocusable(true);
++            mStackActionButton.setForeground(
++                    mContext.getDrawable(R.drawable.recents_task_view_focus_highlight));
++            mStackActionButton.requestFocus();
++            return true;
++        }
++        return false;
++    }
++
++    /** Whether "Clear all" has the D-pad focus, see {@link #navigateStackActionButton}. */
++    public boolean isStackActionButtonFocused() {
++        return mStackActionButton != null && mStackActionButton.isFocused();
++    }
++
+     /**
+      * Launches the specified {@link Task}.
+      */
