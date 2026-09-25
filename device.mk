@@ -89,6 +89,8 @@ PRODUCT_PACKAGES += \
     hostapd_cli \
     libwpa_client \
     lib_driver_cmd_mt66xx
+PRODUCT_COPY_FILES += \
+    $(LOCAL_PATH)/configs/wifi/wifi.cfg:system/etc/firmware/wifi.cfg
 
 # Bluetooth: btaddr_mtk exports the NVRAM address for the stack.
 PRODUCT_PACKAGES += \
