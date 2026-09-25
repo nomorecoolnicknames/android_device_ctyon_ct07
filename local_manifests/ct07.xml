@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <remote name="github" fetch="https://github.com/" />
+
+  <project path="device/bird/ct07" name="nomorecoolnicknames/android_device_ctyon_ct07" remote="github" revision="lineage-16.0" />
+  <project path="vendor/ctyon/ct07" name="nomorecoolnicknames/android_vendor_ctyon_ct07" remote="github" revision="lineage-16.0" />
+  <project path="kernel/ctyon/ct07" name="nomorecoolnicknames/android_kernel_ctyon_ct07" remote="github" revision="android-3.18" clone-depth="1" />
+
+  <project path="vendor/mediatek" name="lenovo-k4note/android_vendor_mediatek" remote="github" revision="1ab7db9ea8e454a58577da1e8653c8f465802dc9" />
+
+  <project path="packages/apps/MonoLaunch" name="nomorecoolnicknames/MonoLaunch" remote="github" revision="ct07" />
+  <project path="packages/apps/CT07KeyMouse" name="nomorecoolnicknames/android_packages_apps_CT07KeyMouse" remote="github" revision="master" />
+</manifest>
