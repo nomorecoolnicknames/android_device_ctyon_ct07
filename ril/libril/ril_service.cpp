@@ -2790,9 +2790,9 @@ Return<void> RadioImpl::getRadioCapability(int32_t serial) {
     RLOGD("getRadioCapability: serial %d", serial);
 #endif
 #ifdef MTK_HARDWARE
-    /* Answered with REQUEST_NOT_SUPPORTED: in the vendor RIL this request
-     * crashes rild (invalid channel context in rilOemMain). The framework
-     * handles NOT_SUPPORTED, as for RIL_REQUEST_SIGNAL_STRENGTH above. */
+    /* Not passed to the vendor RIL: there this request crashes rild (invalid
+     * channel context in rilOemMain). getRadioCapabilityResponse() answers
+     * with the capability the vendor indicated, or the default one. */
     RequestInfo *pRI = android::addRequestToList(serial, mSlotId,
             RIL_REQUEST_GET_RADIO_CAPABILITY);
     if (pRI != NULL) {
@@ -2821,6 +2821,20 @@ Return<void> RadioImpl::setRadioCapability(int32_t serial, const RadioCapability
     rilRc.rat = (int) rc.raf;
     rilRc.status = (int) rc.status;
     strncpy(rilRc.logicalModemUuid, rc.logicalModemUuid.c_str(), MAX_UUID_LENGTH);
+
+#ifdef MTK_HARDWARE
+    /* Not supported: moving the 3G/4G protocol to the other SIM resets the
+     * modem, which this rild and gsm0710muxd do not survive. The framework
+     * asks for it once the capabilities are known and the data SIM is not
+     * the one with the 3G/4G protocol. The request comes back with its own
+     * session and a failed status, so ProxyController fails the START and
+     * FINISH phases at once and nothing changes. */
+    rilRc.version = RIL_RADIO_CAPABILITY_VERSION;
+    rilRc.status = RC_STATUS_FAIL;
+    pRI->pCI->responseFunction((int) pRI->socket_id, (int) RadioResponseType::SOLICITED,
+	    pRI->token, RIL_E_REQUEST_NOT_SUPPORTED, &rilRc, sizeof(rilRc));
+    return Void();
+#endif
 
     android::my_enqueue(pRI->pCI->requestNumber, &rilRc, sizeof(rilRc), android::FMT_RAW, pRI);
 
@@ -6699,8 +6713,25 @@ int radio::requestShutdownResponse(int slotId,
 static RIL_RadioCapability s_lastRadioCapability[SIM_COUNT];
 static bool s_lastRadioCapabilityValid[SIM_COUNT];
 
+/* Before any indication for the slot (the vendor sends it once when rild
+ * starts, not always for both slots), answer as mtk-ril.so's
+ * requestGetRadioCapability() does: the slot in persist.radio.simswitch
+ * (1-based) has GSM, UMTS and LTE, the other one GSM only. */
+static void defaultRadioCapability(int slotId, RIL_RadioCapability *rc) {
+    char prop[PROPERTY_VALUE_MAX] = {0};
+    property_get("persist.radio.simswitch", prop, "1");
+    int majorSlot = atoi(prop) - 1;
+
+    memset(rc, 0, sizeof(*rc));
+    rc->version = RIL_RADIO_CAPABILITY_VERSION;
+    rc->phase = RC_PHASE_CONFIGURED;
+    rc->status = RC_STATUS_NONE;
+    rc->rat = (slotId == majorSlot) ? (RAF_GSM | RAF_UMTS | RAF_LTE) : RAF_GSM;
+}
+
 void responseRadioCapability(int slotId, RadioResponseInfo& responseInfo, int serial,
-	int responseType, RIL_Errno e, void *response, size_t responseLen, RadioCapability& rc) {
+	int responseType, RIL_Errno e, void *response, size_t responseLen, RadioCapability& rc,
+	bool substitute) {
     populateResponseInfo(responseInfo, serial, responseType, e);
 
     /* MTK appends fields: accept a longer structure; a shorter one is still
@@ -6708,15 +6739,20 @@ void responseRadioCapability(int slotId, RadioResponseInfo& responseInfo, int se
     if (response == NULL || responseLen < sizeof(RIL_RadioCapability)) {
 	RLOGE("responseRadioCapability: unusable response: null=%d len=%zu need>=%zu e=%d",
 	      (response == NULL) ? 1 : 0, responseLen, sizeof(RIL_RadioCapability), (int) e);
-	if (slotId >= 0 && slotId < SIM_COUNT
-	    && __atomic_load_n(&s_lastRadioCapabilityValid[slotId], __ATOMIC_ACQUIRE)) {
-	    convertRilRadioCapabilityToHal(&s_lastRadioCapability[slotId],
+	if (substitute && slotId >= 0 && slotId < SIM_COUNT) {
+	    RIL_RadioCapability fallback;
+	    bool indicated = __atomic_load_n(&s_lastRadioCapabilityValid[slotId],
+		    __ATOMIC_ACQUIRE);
+	    if (!indicated) {
+		defaultRadioCapability(slotId, &fallback);
+	    }
+	    convertRilRadioCapabilityToHal(indicated ? &s_lastRadioCapability[slotId] : &fallback,
 		sizeof(RIL_RadioCapability), rc);
 	    responseInfo.error = RadioError::NONE;
-	    RLOGI("responseRadioCapability: slot %d, substituting the last indicated "
+	    RLOGI("responseRadioCapability: slot %d, substituting the %s "
 		  "capability: raf=%d session=%d phase=%d status=%d uuid=[%s]",
-		  slotId, (int) rc.raf, rc.session, (int) rc.phase, (int) rc.status,
-		  rc.logicalModemUuid.c_str());
+		  slotId, indicated ? "last indicated" : "default", (int) rc.raf, rc.session,
+		  (int) rc.phase, (int) rc.status, rc.logicalModemUuid.c_str());
 	} else {
 	    if (e == RIL_E_SUCCESS) responseInfo.error = RadioError::INVALID_RESPONSE;
 	    rc.logicalModemUuid = hidl_string();
@@ -6737,7 +6773,7 @@ int radio::getRadioCapabilityResponse(int slotId,
 	RadioResponseInfo responseInfo = {};
 	RadioCapability result = {};
 	responseRadioCapability(slotId, responseInfo, serial, responseType, e, response,
-		responseLen, result);
+		responseLen, result, true);
 	Return<void> retStatus = radioService[slotId]->mRadioResponse->getRadioCapabilityResponse(
 		responseInfo, result);
 	radioService[slotId]->checkReturnStatus(retStatus);
@@ -6759,7 +6795,7 @@ int radio::setRadioCapabilityResponse(int slotId,
 	RadioResponseInfo responseInfo = {};
 	RadioCapability result = {};
 	responseRadioCapability(slotId, responseInfo, serial, responseType, e, response,
-		responseLen, result);
+		responseLen, result, false);
 	Return<void> retStatus = radioService[slotId]->mRadioResponse->setRadioCapabilityResponse(
 		responseInfo, result);
 	radioService[slotId]->checkReturnStatus(retStatus);
@@ -8576,22 +8612,22 @@ void convertRilRadioCapabilityToHal(void *response, size_t responseLen, RadioCap
 int radio::radioCapabilityIndicationInd(int slotId,
 					int indicationType, int token, RIL_Errno e, void *response,
 					size_t responseLen) {
-    if (radioService[slotId] != NULL && radioService[slotId]->mRadioIndication != NULL) {
-	if (response == NULL || responseLen != sizeof(RIL_RadioCapability)) {
-	    RLOGE("radioCapabilityIndicationInd: invalid response");
-	    return 0;
-	}
+    if (response == NULL || responseLen < sizeof(RIL_RadioCapability)) {
+	RLOGE("radioCapabilityIndicationInd: invalid response");
+	return 0;
+    }
 
+    /* Remember it for responseRadioCapability(), also while the framework is
+     * not connected: the vendor sends it once, when rild starts. Payload
+     * first, then the flag. */
+    if (slotId >= 0 && slotId < SIM_COUNT) {
+	memcpy(&s_lastRadioCapability[slotId], response, sizeof(RIL_RadioCapability));
+	__atomic_store_n(&s_lastRadioCapabilityValid[slotId], true, __ATOMIC_RELEASE);
+    }
+
+    if (radioService[slotId] != NULL && radioService[slotId]->mRadioIndication != NULL) {
 	RadioCapability rc = {};
 	convertRilRadioCapabilityToHal(response, responseLen, rc);
-
-	/* Remember it for responseRadioCapability(). Payload first, then the
-	 * flag. */
-	if (slotId >= 0 && slotId < SIM_COUNT) {
-	    memcpy(&s_lastRadioCapability[slotId], response, sizeof(RIL_RadioCapability));
-	    __atomic_store_n(&s_lastRadioCapabilityValid[slotId], true, __ATOMIC_RELEASE);
-	}
-
 #if VDBG
 	RLOGD("radioCapabilityIndicationInd");
 #endif
