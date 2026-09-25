@@ -513,7 +513,8 @@ on post-fs-data
 
     # SMI
     chmod 0660 /dev/MTK_SMI
-    chown media media /dev/MTK_SMI
+    # libbwc opens it from the camera provider and media.codec (group camera).
+    chown system camera /dev/MTK_SMI
 
 
    #change partition permission
