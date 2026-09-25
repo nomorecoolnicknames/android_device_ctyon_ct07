@@ -145,7 +145,8 @@ PRODUCT_COPY_FILES += \
     external/wpa_supplicant_8/wpa_supplicant/wpa_supplicant_template.conf:$(TARGET_COPY_OUT_VENDOR)/etc/wifi/wpa_supplicant.conf
 
 # Telephony: MTK HIDL rild and libril (vendor/mediatek/ril) with the stock
-# mtk-ril.so.
+# mtk-ril.so. Default network mode GSM/WCDMA: without IMS the modem does not
+# register for CS services on LTE, so calls need 3G/2G. LTE stays selectable.
 ENABLE_VENDOR_RIL_SERVICE := true
 PRODUCT_PACKAGES += \
     rild \
@@ -157,7 +158,7 @@ PRODUCT_PROPERTY_OVERRIDES += \
     persist.gemini.sim_num=2 \
     ril.current.share_modem=2 \
     ro.mtk_enable_md1=1 \
-    ro.telephony.default_network=9,0 \
+    ro.telephony.default_network=0,0 \
     ro.logd.size.radio=256K
 
 # Shims for the stock blobs (see board/shims.mk)
