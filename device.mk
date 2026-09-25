@@ -142,7 +142,8 @@ PRODUCT_PACKAGES += \
     libwpa_client \
     libwifi-hal-mt66xx
 PRODUCT_COPY_FILES += \
-    external/wpa_supplicant_8/wpa_supplicant/wpa_supplicant_template.conf:$(TARGET_COPY_OUT_VENDOR)/etc/wifi/wpa_supplicant.conf
+    external/wpa_supplicant_8/wpa_supplicant/wpa_supplicant_template.conf:$(TARGET_COPY_OUT_VENDOR)/etc/wifi/wpa_supplicant.conf \
+    $(LOCAL_PATH)/configs/wifi/wifi.cfg:system/etc/firmware/wifi.cfg
 
 # Telephony: MTK HIDL rild and libril (vendor/mediatek/ril) with the stock
 # mtk-ril.so. Default network mode GSM/WCDMA: without IMS the modem does not
