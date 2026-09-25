@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  At 120 dpi the play button covers the right end of the station buttons
+  (next station sits under it and takes the key focus). Keep the row clear
+  of the button: 16dp padding + 64dp button + 8dp.
+-->
+<resources>
+    <dimen name="fm_rl_imgbtnpart_margin_right">88dp</dimen>
+</resources>

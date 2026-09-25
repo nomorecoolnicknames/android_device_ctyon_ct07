@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 18:36:43 +0300
+Subject: [PATCH 5/5] FMRadio: make powering up on launch configurable
+
+config_powerUpOnLaunch (default true) keeps the current behaviour. When
+it is false the activity starts with the radio off and the play button
+enabled, so opening the app does not start playback on the speaker.
+---
+ res/values/config.xml                       | 3 +++
+ src/com/android/fmradio/FmMainActivity.java | 6 +++++-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/res/values/config.xml b/res/values/config.xml
+index b587355..b1eb69c 100644
+--- a/res/values/config.xml
++++ b/res/values/config.xml
+@@ -16,4 +16,7 @@
+ 
+ <resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+     <bool name="config_useSoftwareRenderingForAudio" translatable="false">true</bool>
++
++    <!-- Power up the radio as soon as the main activity starts. -->
++    <bool name="config_powerUpOnLaunch" translatable="false">true</bool>
+ </resources>
+diff --git a/src/com/android/fmradio/FmMainActivity.java b/src/com/android/fmradio/FmMainActivity.java
+index 216a23a..3299bd9 100644
+--- a/src/com/android/fmradio/FmMainActivity.java
++++ b/src/com/android/fmradio/FmMainActivity.java
+@@ -362,7 +362,11 @@ public class FmMainActivity extends Activity implements FmFavoriteEditDialog.Edi
+             }
+             if (!mService.isServiceInited()) {
+                 mService.initService(mCurrentStation);
+-                powerUpFm();
++                if (getResources().getBoolean(R.bool.config_powerUpOnLaunch)) {
++                    powerUpFm();
++                } else {
++                    updateMenuStatus();
++                }
+             } else {
+                 if (mService.isDeviceOpen()) {
+                     // tune to station during changing language,we need to tune
+-- 
+2.39.5
+

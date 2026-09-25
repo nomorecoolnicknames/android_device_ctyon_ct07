@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The radio also plays through the speaker on the internal antenna, so do
+  not start it just because the app was opened (FMRadio 0005).
+-->
+<resources>
+    <bool name="config_powerUpOnLaunch">false</bool>
+</resources>
