@@ -17,4 +17,8 @@
         <item>"bnep\\d"</item>
         <item>"bt-pan"</item>
     </string-array>
+    <!-- A long press of MENU opens Recents (2 = APP_SWITCH); Settings >
+         Buttons can change it. 70 = Back 2 + Menu 4 + Volume 64. -->
+    <integer name="config_deviceHardwareKeys">70</integer>
+    <integer name="config_longPressOnMenuBehavior">2</integer>
 </resources>

@@ -57,6 +57,20 @@ WITH_DEXPREOPT_PIC := true
 
 DEVICE_PACKAGE_OVERLAYS += $(LOCAL_PATH)/overlay
 
+# Keypad
+PRODUCT_COPY_FILES += \
+    $(LOCAL_PATH)/keylayout/mtk-kpd.kl:system/usr/keylayout/mtk-kpd.kl
+
+# Keypad apps: MonoLaunch (home), Traditional T9 (input method) and the key
+# mouse (D-pad pointer, CT07_WITH_KEYMOUSE=false leaves it out).
+PRODUCT_PACKAGES += \
+    MonoLaunch \
+    TraditionalT9
+ifneq ($(CT07_WITH_KEYMOUSE),false)
+PRODUCT_PACKAGES += CT07KeyMouse
+PRODUCT_PROPERTY_OVERRIDES += ro.bdfun.uinput_mouse=true
+endif
+
 # Memory: zram swap after boot
 PRODUCT_COPY_FILES += \
     $(LOCAL_PATH)/init/ct07-lowram.rc:system/etc/init/ct07-lowram.rc

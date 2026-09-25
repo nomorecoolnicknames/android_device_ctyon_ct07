@@ -1,0 +1,27 @@
+diff --git a/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsInput.java b/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsInput.java
+index ef13626..5150df2 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsInput.java
++++ b/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsInput.java
+@@ -9,6 +9,7 @@ import java.util.Collections;
+ import java.util.HashSet;
+ import java.util.Set;
+ 
++import io.github.sspanak.tt9.languages.Language;
+ import io.github.sspanak.tt9.languages.LanguageCollection;
+ import io.github.sspanak.tt9.util.Logger;
+ 
+@@ -36,6 +37,14 @@ class SettingsInput extends SettingsHacks {
+ 			}
+ 		}
+ 
++		// CT07: the build bundles only the shipped languages; enable all of them
++		// until the user saves a choice.
++		if (list.isEmpty()) {
++			for (Language language : LanguageCollection.getAll()) {
++				list.add(language.getId());
++			}
++		}
++
+ 		if (list.isEmpty()) {
+ 			list.add(LanguageCollection.getDefault().getId());
+ 		}
