@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Fri, 25 Sep 2026 17:59:26 +0300
+Subject: [PATCH 10/10] wifi: take the AP interface name from
+ ro.vendor.wifi.sap.interface
+
+MediaTek CONSYS drivers bring up a separate ap0 interface when AP mode
+is written to the driver mode node; wlan0 itself cannot be switched to
+AP. Use the dedicated name from ro.vendor.wifi.sap.interface when it is
+set, as later AOSP releases do, and fall back to wlan0/wlan1 otherwise.
+---
+ wifi/1.2/default/wifi_chip.cpp | 22 +++++++++++++++++++++-
+ wifi/1.2/default/wifi_chip.h   |  1 +
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/wifi/1.2/default/wifi_chip.cpp b/wifi/1.2/default/wifi_chip.cpp
+index 857415e..ce5f147 100644
+--- a/wifi/1.2/default/wifi_chip.cpp
++++ b/wifi/1.2/default/wifi_chip.cpp
+@@ -106,6 +106,16 @@ std::string getP2pIfaceName() {
+     return buffer.data();
+ }
+ 
++// Returns the dedicated AP iface name if one is defined.
++std::string getApIfaceName() {
++    std::array<char, PROPERTY_VALUE_MAX> buffer;
++    if (property_get("ro.vendor.wifi.sap.interface", buffer.data(), nullptr) ==
++        0) {
++        return {};
++    }
++    return buffer.data();
++}
++
+ // delete files that meet either conditions:
+ // 1. older than a predefined time in the wifi tombstone dir.
+ // 2. Files in excess to a predefined amount, starting from the oldest ones
+@@ -749,7 +759,7 @@ std::pair<WifiStatus, sp<IWifiApIface>> WifiChip::createApIfaceInternal() {
+     }
+ 
+     bool iface_created = false;
+-    std::string ifname = allocateApOrStaIfaceName();
++    std::string ifname = allocateApIfaceName();
+     if (!if_nametoindex(ifname.c_str())) {
+         legacy_hal::wifi_error legacy_status =
+             legacy_hal_.lock()->QcAddInterface(getWlan0IfaceName(), ifname,
+@@ -1430,6 +1440,16 @@ bool WifiChip::isValidModeId(ChipModeId mode_id) {
+     return false;
+ }
+ 
++// Return the dedicated AP iface name if one is defined, else the same as
++// allocateApOrStaIfaceName().
++std::string WifiChip::allocateApIfaceName() {
++    std::string ifname = getApIfaceName();
++    if (!ifname.empty()) {
++        return ifname;
++    }
++    return allocateApOrStaIfaceName();
++}
++
+ // Return "wlan0", if "wlan0" is not already in use, else return "wlan1".
+ // This is based on the assumption that we'll have a max of 2 concurrent
+ // AP/STA ifaces.
+diff --git a/wifi/1.2/default/wifi_chip.h b/wifi/1.2/default/wifi_chip.h
+index 6a389a4..180d50c 100644
+--- a/wifi/1.2/default/wifi_chip.h
++++ b/wifi/1.2/default/wifi_chip.h
+@@ -216,6 +216,7 @@ class WifiChip : public V1_2::IWifiChip {
+         const std::map<IfaceType, size_t>& combo, IfaceType type);
+     bool canCurrentModeSupportIfaceOfType(IfaceType type);
+     bool isValidModeId(ChipModeId mode_id);
++    std::string allocateApIfaceName();
+     std::string allocateApOrStaIfaceName();
+     bool writeRingbufferFilesInternal();
+ 
+-- 
+2.39.5
+

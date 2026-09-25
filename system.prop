@@ -1,5 +1,6 @@
 wifi.interface=wlan0
 wifi.tethering.interface=ap0
+ro.vendor.wifi.sap.interface=ap0
 wifi.direct.interface=p2p0
 ro.mediatek.wlan.wsc=1
 ro.mediatek.wlan.p2p=1

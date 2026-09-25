@@ -66,7 +66,8 @@ TARGET_SYSTEM_PROP := $(DEVICE_PATH)/system.prop
 # SELinux: the M-era MTK rules violate Pie neverallows; runtime is permissive.
 SELINUX_IGNORE_NEVERALLOWS := true
 
-# Wi-Fi: MT6735 CONSYS, driver state through /dev/wmtWifi.
+# Wi-Fi: MT6735 CONSYS, driver state and mode through /dev/wmtWifi. AP mode
+# brings up ap0 (ro.vendor.wifi.sap.interface).
 BOARD_WLAN_DEVICE := MediaTek
 WPA_SUPPLICANT_VERSION := VER_0_8_X
 BOARD_WPA_SUPPLICANT_DRIVER := NL80211
@@ -76,6 +77,10 @@ BOARD_HOSTAPD_PRIVATE_LIB := lib_driver_cmd_mt66xx
 WIFI_DRIVER_STATE_CTRL_PARAM := /dev/wmtWifi
 WIFI_DRIVER_STATE_ON := 1
 WIFI_DRIVER_STATE_OFF := 0
+WIFI_DRIVER_FW_PATH_PARAM := /dev/wmtWifi
+WIFI_DRIVER_FW_PATH_STA := STA
+WIFI_DRIVER_FW_PATH_AP := AP
+WIFI_DRIVER_FW_PATH_P2P := P2P
 
 # Bluetooth
 BOARD_HAVE_BLUETOOTH := true
