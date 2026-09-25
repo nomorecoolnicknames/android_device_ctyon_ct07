@@ -2110,11 +2110,28 @@ Return<void> RadioImpl::setCellInfoListRate(int32_t serial, int32_t rate) {
     return Void();
 }
 
+/* The framework's last initial attach APN per slot, sent again when the vendor
+ * asks for it (setAttachApnInd). */
+#define IA_SLOTS (sizeof(radioService) / sizeof(radioService[0]))
+static pthread_mutex_t s_lastIaMutex = PTHREAD_MUTEX_INITIALIZER;
+static bool s_lastIaValid[IA_SLOTS];
+static DataProfileInfo s_lastIa[IA_SLOTS];
+static bool s_lastIaModemCognitive[IA_SLOTS];
+static bool s_lastIaRoaming[IA_SLOTS];
+
 Return<void> RadioImpl::setInitialAttachApn(int32_t serial, const DataProfileInfo& dataProfileInfo,
 					    bool modemCognitive, bool isRoaming) {
 #if VDBG
     RLOGD("setInitialAttachApn: serial %d", serial);
 #endif
+    if (serial != -1 && mSlotId >= 0 && (size_t) mSlotId < IA_SLOTS) {
+	pthread_mutex_lock(&s_lastIaMutex);
+	s_lastIa[mSlotId] = dataProfileInfo;
+	s_lastIaModemCognitive[mSlotId] = modemCognitive;
+	s_lastIaRoaming[mSlotId] = isRoaming;
+	s_lastIaValid[mSlotId] = true;
+	pthread_mutex_unlock(&s_lastIaMutex);
+    }
     RequestInfo *pRI = android::addRequestToList(serial, mSlotId,
 		RIL_REQUEST_SET_INITIAL_ATTACH_APN);
     if (pRI == NULL) {
@@ -9107,6 +9124,61 @@ int radio::psNetworkStateChangedInd(int slotId,
 }
 
 // RIL_UNSOL_SET_ATTACH_APN
+/* mtk-ril.so raises RIL_UNSOL_SET_ATTACH_APN from onAttachApnReset() while it
+ * holds the per-RIL mutex that requestSetInitialAttachApn() takes. Sending the
+ * initial attach APN from inside the indication locked that mutex a second
+ * time on the same thread: rild hung with the radio HAL, and the phone process
+ * with it. Send it from the event loop instead: the APN the framework last
+ * set for the slot, or an empty one before the framework has set any. */
+static void sendInitialAttachApnAgain(void *param) {
+    int slotId = (int) (intptr_t) param;
+    DataProfileInfo dataProfileInfo;
+    bool valid, modemCognitive = false, isRoaming = false;
+
+    pthread_mutex_lock(&s_lastIaMutex);
+    valid = s_lastIaValid[slotId];
+    if (valid) {
+	dataProfileInfo = s_lastIa[slotId];
+	modemCognitive = s_lastIaModemCognitive[slotId];
+	isRoaming = s_lastIaRoaming[slotId];
+    }
+    pthread_mutex_unlock(&s_lastIaMutex);
+
+    if (radioService[slotId] == NULL) {
+	return;
+    }
+    if (valid) {
+	radioService[slotId]->setInitialAttachApn(-1, dataProfileInfo, modemCognitive,
+		isRoaming);
+	return;
+    }
+
+    RIL_InitialAttachApn iaa = {};
+    RequestInfo *pRI = android::addRequestToList(-1, slotId,
+			RIL_REQUEST_SET_INITIAL_ATTACH_APN);
+    if (pRI == NULL) {
+	return;
+    }
+    iaa.apn = (char *) calloc(1, sizeof(char));
+    iaa.protocol = (char *) calloc(1, sizeof(char));
+#ifndef MTK_RIL_IAA_NO_ROAMING_PROTOCOL
+    iaa.roamingProtocol = (char *) calloc(1, sizeof(char));
+#endif
+    iaa.username = (char *) calloc(1, sizeof(char));
+    iaa.password = (char *) calloc(1, sizeof(char));
+    iaa.operatorNumeric = (char *) calloc(1, sizeof(char));
+
+    android::my_enqueue(RIL_REQUEST_SET_INITIAL_ATTACH_APN, &iaa,
+			sizeof(iaa) - sizeof(char**), android::FMT_IGNORE, pRI);
+#ifdef MTK_RIL_IAA_NO_ROAMING_PROTOCOL
+    memsetAndFreeStrings(5, iaa.apn, iaa.protocol,
+			iaa.username, iaa.password, iaa.operatorNumeric);
+#else
+    memsetAndFreeStrings(6, iaa.apn, iaa.protocol, iaa.roamingProtocol,
+			iaa.username, iaa.password, iaa.operatorNumeric);
+#endif
+}
+
 int radio::setAttachApnInd(int slotId,
 			   int indType, int token, RIL_Errno e, void *response,
 			   size_t responselen) {
@@ -9114,30 +9186,7 @@ int radio::setAttachApnInd(int slotId,
 #if VDBG
 	RLOGD("setAttachApnInd");
 #endif
-	RIL_InitialAttachApn iaa = {};
-	RequestInfo *pRI = android::addRequestToList(-1, slotId,
-				RIL_REQUEST_SET_INITIAL_ATTACH_APN);
-	if (pRI == NULL) {
-	    return 0;
-	}
-	iaa.apn = (char *) calloc(1, sizeof(char));
-	iaa.protocol = (char *) calloc(1, sizeof(char));
-#ifndef MTK_RIL_IAA_NO_ROAMING_PROTOCOL
-	iaa.roamingProtocol = (char *) calloc(1, sizeof(char));
-#endif
-	iaa.username = (char *) calloc(1, sizeof(char));
-	iaa.password = (char *) calloc(1, sizeof(char));
-	iaa.operatorNumeric = (char *) calloc(1, sizeof(char));
-
-	android::my_enqueue(RIL_REQUEST_SET_INITIAL_ATTACH_APN, &iaa,
-				sizeof(iaa) - sizeof(char**), android::FMT_IGNORE, pRI);
-#ifdef MTK_RIL_IAA_NO_ROAMING_PROTOCOL
-	memsetAndFreeStrings(5, iaa.apn, iaa.protocol,
-				iaa.username, iaa.password, iaa.operatorNumeric);
-#else
-	memsetAndFreeStrings(6, iaa.apn, iaa.protocol, iaa.roamingProtocol,
-				iaa.username, iaa.password, iaa.operatorNumeric);
-#endif
+	RIL_requestTimedCallback(sendInitialAttachApnAgain, (void *) (intptr_t) slotId, NULL);
     } else {
 	RLOGE("setAttachApnInd: radioService[%d]->mRadioIndication == NULL", slotId);
     }
