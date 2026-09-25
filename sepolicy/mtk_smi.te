@@ -1,0 +1,2 @@
+# /dev/MTK_SMI, referenced by the MediaTek mediacodec rules.
+type MTK_SMI_device, dev_type;

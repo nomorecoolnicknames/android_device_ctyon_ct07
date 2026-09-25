@@ -1,0 +1,20 @@
+# Appended to the mediacodec seccomp policy (BOARD_SECCOMP_POLICY): syscalls
+# of the stock MTK OMX components and their libraries.
+sched_getparam: 1
+sched_getscheduler: 1
+sched_setaffinity: 1
+sched_getaffinity: 1
+# libvcodecdrv.so pins its bitstream buffers
+mlock: 1
+munlock: 1
+# libdpframework.so / libnvram.so create dump directories on demand
+mkdirat: 1
+# libcustom_prop.so (via libnvram.so); read-only
+uname: 1
+# libaed.so / libgas.so use syscall(SYS_gettid) directly, bypassing the
+# cached bionic wrapper
+gettid: 1
+getpid: 1
+# MediaTek audio OMX and vcodec libraries
+fsync: 1
+fdatasync: 1

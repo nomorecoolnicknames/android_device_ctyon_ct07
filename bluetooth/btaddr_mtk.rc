@@ -1,0 +1,19 @@
+# Export the factory BT address from MTK NVRAM for the Bluetooth stack
+# (read back via ro.bt.bdaddr_path)
+on property:service.nvram_init=Ready
+    start btaddr_mtk
+
+service btaddr_mtk /system/bin/btaddr_mtk
+    user root
+    group system bluetooth net_bt_stack
+    disabled
+    oneshot
+
+# Update the Settings.Secure address cache once the settings provider is up
+on property:sys.boot_completed=1
+    start btaddr_settings
+
+service btaddr_settings /system/bin/sh /system/etc/btaddr_settings.sh
+    user root
+    disabled
+    oneshot

@@ -1,0 +1,9 @@
+# The MTK RIL daemon and its sockets
+/system/bin/mtkrild      u:object_r:rild_exec:s0
+/dev/socket/rild[2-4]           u:object_r:rild_socket:s0
+/dev/socket/rild-atci           u:object_r:rild_socket:s0
+/dev/socket/rild-ims            u:object_r:rild_socket:s0
+/dev/socket/rild-mtk-modem      u:object_r:rild_socket:s0
+/dev/socket/rild-mtk-ut         u:object_r:rild_socket:s0
+/dev/socket/rild-mtk-ut-2       u:object_r:rild_socket:s0
+/dev/socket/rild-oem            u:object_r:rild_socket:s0

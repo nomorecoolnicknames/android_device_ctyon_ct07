@@ -1,0 +1,39 @@
+# fstab for init and for recovery (TARGET_RECOVERY_FSTAB). Raw mmcblk0pN
+# nodes: the by-name directory is spelled differently by the stock ramdisk
+# and by TWRP, and the updater-script has to work under TWRP.
+#
+# Partitions (stock GPT):
+#   p1 proinfo  p2 nvram   p3 protect1  p4 protect2  p5 lk      p6 para
+#   p7 boot     p8 recovery p9 logo     p10 expdb    p11 seccfg p12 oemkeystore
+#   p13 secro   p14 keystore p15 tee1   p16 tee2     p17 frp    p18 nvdata
+#   p19 metadata p20 system p21 cache   p22 userdata p23 flashinfo
+
+/dev/block/mmcblk0p20 /system ext4 ro wait
+
+/dev/block/mmcblk0p22 /data ext4 noatime,nosuid,nodev,noauto_da_alloc,discard wait,check,resize,encryptable=/dev/block/mmcblk0p19
+/dev/block/mmcblk0p21 /cache ext4 noatime,nosuid,nodev,noauto_da_alloc,discard wait,check
+/dev/block/mmcblk0p3 /protect_f ext4 noatime,nosuid,nodev,noauto_da_alloc,commit=1,nodelalloc wait,check,formattable
+/dev/block/mmcblk0p4 /protect_s ext4 noatime,nosuid,nodev,noauto_da_alloc,commit=1,nodelalloc wait,check,formattable
+/dev/block/mmcblk0p18 /nvdata ext4 noatime,nosuid,nodev,noauto_da_alloc,discard wait,check,formattable
+
+# msdc0 is the internal eMMC and must not be handed to vold; msdc1 is the
+# microSD slot.
+/devices/mtk-msdc.0/11240000.msdc1* auto auto defaults voldmanaged=sdcard1:auto,encryptable=userdata
+/devices/platform/mt_usb* auto vfat defaults voldmanaged=usbotg:auto
+
+/dev/block/mmcblk0p17 /persistent emmc defaults defaults
+/dev/block/mmcblk0p2 /nvram emmc defaults defaults
+/dev/block/mmcblk0p1 /proinfo emmc defaults defaults
+/dev/block/mmcblk0p5 /bootloader emmc defaults defaults
+/dev/block/mmcblk0p6 /misc emmc defaults defaults
+/dev/block/mmcblk0p7 /boot emmc defaults defaults
+/dev/block/mmcblk0p8 /recovery emmc defaults defaults
+/dev/block/mmcblk0p9 /logo emmc defaults defaults
+/dev/block/mmcblk0p10 /expdb emmc defaults defaults
+/dev/block/mmcblk0p13 /secro emmc defaults defaults
+/dev/block/mmcblk0p11 /seccfg emmc defaults defaults
+/dev/block/mmcblk0p15 /tee1 emmc defaults defaults
+/dev/block/mmcblk0p16 /tee2 emmc defaults defaults
+
+# 256 MB zram swap, enabled after boot by ct07-lowram.rc
+/dev/block/zram0                                            none        swap    defaults    zramsize=268435456
