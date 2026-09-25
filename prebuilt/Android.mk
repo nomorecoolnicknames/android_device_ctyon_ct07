@@ -1,7 +1,8 @@
 LOCAL_PATH := $(call my-dir)
 
 # Traditional T9 v64.0 (https://github.com/sspanak/tt9), full flavour with
-# the English, Russian and Ukrainian dictionaries.
+# the English, Russian and Ukrainian dictionaries, all three enabled until
+# the user saves a choice (app/TraditionalT9-enable-bundled-languages.patch).
 include $(CLEAR_VARS)
 LOCAL_MODULE := TraditionalT9
 LOCAL_MODULE_CLASS := APPS
