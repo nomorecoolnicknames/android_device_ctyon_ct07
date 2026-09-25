@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 02:28:43 +0300
+Subject: [PATCH] apns: Russia: drop the Beeline rows on 250/11 and ETK on
+ 250/01
+
+250/11 is Yota's code (Beeline is 250/99) and ETK used 250/05. APNs
+are tried in file order, so a Yota SIM set up Beeline's APN before its
+own, and MTS set up MMS on the ETK APN and MMSC.
+---
+ prebuilt/common/etc/apns-conf.xml | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/prebuilt/common/etc/apns-conf.xml b/prebuilt/common/etc/apns-conf.xml
+index bcfe989..e42d2ef 100644
+--- a/prebuilt/common/etc/apns-conf.xml
++++ b/prebuilt/common/etc/apns-conf.xml
+@@ -937,7 +937,6 @@
+   <apn carrier="Tele2 EE MMS" mcc="248" mnc="03" apn="mms.emt.ee" proxy="" port="" user="" password="" mmsc="http://mms.emt.ee/servlets/mms" mmsproxy="217.71.32.82" mmsport="8080" type="mms" />
+   <apn carrier="Tele2 MMS" mcc="248" mnc="03" apn="mms.tele2.ee" proxy="" port="" user="" password="" mmsc="http://mmsc.tele2.ee" mmsproxy="193.12.40.6" mmsport="8080" type="mms" />
+   <apn carrier="MTS RU" mcc="250" mnc="01" apn="internet.mts.ru" proxy="" port="" user="mts" password="mts" mmsc="" authtype="1" type="default,supl" />
+-  <apn carrier="ETK" mcc="250" mnc="01" apn="mms.etk.ru" proxy="" port="" user="mms" password="mms" mmsc="http://mmsc" mmsproxy="10.10.30.60" mmsport="8080" type="default,supl,mms" />
+   <apn carrier="MTS RU MMS" mcc="250" mnc="01" apn="mms.mts.ru" proxy="" port="" user="mts" password="mts" mmsc="http://mmsc" mmsproxy="192.168.192.192" mmsport="8080" authtype="1" type="mms" />
+   <apn carrier="Megafon Internet" mcc="250" mnc="02" apn="internet" proxy="" port="" user="" password="" mmsc="" authtype="1" type="default,supl" />
+   <apn carrier="Megafon MMS" mcc="250" mnc="02" apn="mms" proxy="" port="" user="mms" password="mms" mmsc="http://mmsc:8002" mmsproxy="10.10.10.10" mmsport="8080" authtype="1" type="mms" />
+@@ -953,8 +952,6 @@
+   <apn carrier="mms" mcc="250" mnc="07" apn="mms.smarts.ru" proxy="" port="" user="wap" password="wap" mmsc="http://172.24.120.135/mms/wapenc" mmsproxy="172.24.128.5" mmsport="8080" type="mms" />
+   <apn carrier="МТС-интернет" mcc="250" mnc="10" apn="internet.mts.ru" proxy="" port="" user="mts" password="mts" mmsc="" authtype="1" type="default,supl" />
+   <apn carrier="МТС Центр MMS" mcc="250" mnc="10" apn="mms.mts.ru" proxy="" port="" user="mts" password="mts" mmsc="http://mmsc" mmsproxy="192.168.192.192" mmsport="8080" authtype="1" type="mms" />
+-  <apn carrier="Beeline internet" mcc="250" mnc="11" apn="internet.beeline.ru" proxy="" port="" user="beeline" password="beeline" mmsc="" authtype="1" type="default,supl" />
+-  <apn carrier="Beeline MMS" mcc="250" mnc="11" apn="mms.beeline.ru" proxy="" port="" user="beeline" password="beeline" mmsc="http://mms/" mmsproxy="192.168.94.23" mmsport="8080" authtype="1" type="mms" />
+   <apn carrier="Yota" mcc="250" mnc="11" apn="internet.yota" authtype="1" type="default,supl" />
+   <apn carrier="Yota MMS" mcc="250" mnc="11" apn="mms.yota" mmsc="http://mmsc:8002" mmsproxy="10.10.10.10" mmsport="8080" authtype="1" type="mms" />
+   <apn carrier="GPRS-Internet" mcc="250" mnc="12" apn="inet.bwc.ru" proxy="" port="" user="bwc" password="bwc" mmsc="" type="default,supl" />
