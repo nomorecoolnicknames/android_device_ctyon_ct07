@@ -40,6 +40,9 @@ ril_inc := external/nanopb-c \
 
 ril_cflags := -Wno-unused-parameter -DANDROID_SIM_COUNT_2 -DANDROID_MULTI_SIM -DMTK_HARDWARE
 
+# The vendor RIL has no roamingProtocol member in RIL_InitialAttachApn.
+ril_cflags += -DMTK_RIL_IAA_NO_ROAMING_PROTOCOL
+
 # something wrong, cause channel occupied after oNewCommandConnect
 # workaround but not complete yet
 ifeq ($(BOARD_USES_RIL_UNSOL_PENDING),true)
