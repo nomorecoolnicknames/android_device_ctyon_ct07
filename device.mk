@@ -38,6 +38,23 @@ PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.hardware.camera.front.xml:system/etc/permissions/android.hardware.camera.front.xml \
     frameworks/native/data/etc/android.hardware.usb.accessory.xml:system/etc/permissions/android.hardware.usb.accessory.xml
 
+# Keypad
+PRODUCT_COPY_FILES += \
+    $(LOCAL_PATH)/keylayout/mtk-kpd.kl:system/usr/keylayout/mtk-kpd.kl
+
+# Keypad apps: MonoLaunch (home), Traditional T9 (input method) and the key
+# mouse (D-pad pointer, CT07_WITH_KEYMOUSE=false leaves it out).
+PRODUCT_PACKAGES += \
+    MonoLaunch \
+    TraditionalT9
+ifneq ($(CT07_WITH_KEYMOUSE),false)
+PRODUCT_PACKAGES += CT07KeyMouse
+PRODUCT_PROPERTY_OVERRIDES += ro.bdfun.uinput_mouse=true
+endif
+
+# Base apps this phone does not ship (prebuilt/Android.mk)
+PRODUCT_PACKAGES += RemovePackages
+
 DEVICE_PACKAGE_OVERLAYS += $(LOCAL_PATH)/overlay
 
 # Memory: zram swap after boot

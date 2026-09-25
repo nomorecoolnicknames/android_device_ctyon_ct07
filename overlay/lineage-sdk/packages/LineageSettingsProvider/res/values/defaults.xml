@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The soft keys wake the screen (config_deviceHardwareWakeKeys). These
+  defaults come from patches/lineage-16.0/lineage-sdk.
+-->
+<resources>
+    <bool name="def_back_wake_screen">true</bool>
+    <bool name="def_menu_wake_screen">true</bool>
+</resources>

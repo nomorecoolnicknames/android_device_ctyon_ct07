@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The soft keys (MENU, BACK) wake the screen together with the red key; the
+  matching LineageSettings defaults are in the LineageSettingsProvider
+  overlay. A long press of MENU opens Recents.
+-->
+<resources>
+    <!-- 2 Back + 4 Menu + 64 Volume rocker (the lineage-sdk default). -->
+    <integer name="config_deviceHardwareKeys">70</integer>
+    <integer name="config_deviceHardwareWakeKeys">70</integer>
+
+    <!-- 2 = Recent apps (DeviceKeysConstants.Action.APP_SWITCH). -->
+    <integer name="config_longPressOnMenuBehavior">2</integer>
+</resources>

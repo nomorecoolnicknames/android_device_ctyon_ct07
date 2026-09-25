@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  First-boot defaults for a phone without a touchscreen: no lock screen,
+  no setup wizard, Traditional T9 as the only input method.
+-->
+<resources>
+    <!-- No lock screen: nothing to swipe; the launcher locks the keypad. -->
+    <bool name="def_lockscreen_disabled">true</bool>
+    <!-- Skip LineageSetupWizard entirely. -->
+    <bool name="def_device_provisioned">true</bool>
+    <bool name="def_user_setup_complete">true</bool>
+    <!-- def_input_method / def_enable_input_methods come from
+         patches/lineage-16.0/frameworks/base. -->
+    <string name="def_input_method" translatable="false">io.github.sspanak.tt9/.ime.TraditionalT9</string>
+    <string name="def_enable_input_methods" translatable="false">io.github.sspanak.tt9/.ime.TraditionalT9</string>
+</resources>
