@@ -7326,13 +7326,17 @@ int radio::newSmsOnSimInd(int slotId, int indicationType,
 int radio::onUssdInd(int slotId, int indicationType,
 		     int token, RIL_Errno e, void *response, size_t responseLen) {
     if (radioService[slotId] != NULL && radioService[slotId]->mRadioIndication != NULL) {
-	if (response == NULL || responseLen != 2 * sizeof(char *)) {
+	/* MediaTek sends the mode alone when there is no message (e.g. +CUSD: 4)
+	 * and appends the data coding scheme as a third string otherwise. */
+	if (response == NULL || responseLen < sizeof(char *)
+		|| ((char **) response)[0] == NULL) {
 	    RLOGE("onUssdInd: invalid response");
 	    return 0;
 	}
 	char **strings = (char **) response;
 	char *mode = strings[0];
-	hidl_string msg = convertCharPtrToHidlString(strings[1]);
+	hidl_string msg = convertCharPtrToHidlString(
+		responseLen >= 2 * sizeof(char *) ? strings[1] : NULL);
 	UssdModeType modeType = (UssdModeType) atoi(mode);
 #if VDBG
 	RLOGD("onUssdInd: mode %s", mode);
