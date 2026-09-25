@@ -1,0 +1,91 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Sat, 26 Sep 2026 02:28:44 +0300
+Subject: [PATCH] SubscriptionInfoUpdater: use the only active SIM for data,
+ voice and SMS
+
+On a multi-SIM device the default subscriptions keep pointing at the
+old SIM after a SIM swap, and only a Settings dialog, easy to miss,
+changes them; until then mobile data stays off. When exactly one
+subscription is active, make it the default for data, voice and SMS.
+With two active subscriptions the user's choice stays as it is.
+
+Nothing changes after ACTION_SHUTDOWN, when the slots can go away one
+at a time.
+
+Forward port of the cm-14.1 changes "Set default subscriptions when
+single SIM is available" and "telephony: Do not set default
+subscriptions on shutdown".
+---
+ .../telephony/SubscriptionInfoUpdater.java    | 33 +++++++++++++++++--
+ 1 file changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/src/java/com/android/internal/telephony/SubscriptionInfoUpdater.java b/src/java/com/android/internal/telephony/SubscriptionInfoUpdater.java
+index efcdea6..534f7ad 100644
+--- a/src/java/com/android/internal/telephony/SubscriptionInfoUpdater.java
++++ b/src/java/com/android/internal/telephony/SubscriptionInfoUpdater.java
+@@ -20,10 +20,12 @@ import android.Manifest;
+ import android.annotation.Nullable;
+ import android.app.ActivityManager;
+ import android.app.UserSwitchObserver;
++import android.content.BroadcastReceiver;
+ import android.content.ContentResolver;
+ import android.content.ContentValues;
+ import android.content.Context;
+ import android.content.Intent;
++import android.content.IntentFilter;
+ import android.content.SharedPreferences;
+ import android.content.pm.IPackageManager;
+ import android.os.AsyncResult;
+@@ -120,6 +122,10 @@ public class SubscriptionInfoUpdater extends Handler {
+     private int mCurrentlyActiveUserId;
+     private CarrierServiceBindHelper mCarrierServiceBindHelper;
+ 
++    // Set on ACTION_SHUTDOWN: the SIM slots can go away one by one while the phone shuts
++    // down, and the last one must not take over the default subscriptions then.
++    private volatile boolean mIsShutdown;
++
+     public SubscriptionInfoUpdater(
+             Looper looper, Context context, Phone[] phone, CommandsInterface[] ci) {
+         this(looper, context, phone, ci,
+@@ -140,6 +146,13 @@ public class SubscriptionInfoUpdater extends Handler {
+ 
+         mCarrierServiceBindHelper = new CarrierServiceBindHelper(mContext);
+         initializeCarrierApps();
++
++        mContext.registerReceiver(new BroadcastReceiver() {
++            @Override
++            public void onReceive(Context context, Intent intent) {
++                mIsShutdown = true;
++            }
++        }, new IntentFilter(Intent.ACTION_SHUTDOWN));
+     }
+ 
+     private void initializeCarrierApps() {
+@@ -661,9 +674,23 @@ public class SubscriptionInfoUpdater extends Handler {
+             }
+         }
+ 
+-        // Ensure the modems are mapped correctly
+-        mSubscriptionManager.setDefaultDataSubId(
+-                mSubscriptionManager.getDefaultDataSubscriptionId());
++        if (!mIsShutdown && nSubCount == 1) {
++            // Only one SIM is active, so it is the default for everything. After a SIM swap
++            // the defaults still point at the old SIM's subscription, and on a multi-SIM
++            // device only a Settings dialog would change them: mobile data stays off.
++            int subId = subInfos.get(0).getSubscriptionId();
++            mSubscriptionManager.setDefaultDataSubId(subId);
++            if (SubscriptionManager.getDefaultVoiceSubscriptionId() != subId) {
++                mSubscriptionManager.setDefaultVoiceSubId(subId);
++            }
++            if (SubscriptionManager.getDefaultSmsSubscriptionId() != subId) {
++                mSubscriptionManager.setDefaultSmsSubId(subId);
++            }
++        } else {
++            // Ensure the modems are mapped correctly
++            mSubscriptionManager.setDefaultDataSubId(
++                    mSubscriptionManager.getDefaultDataSubscriptionId());
++        }
+ 
+         // No need to check return value here as we notify for the above changes anyway.
+         updateEmbeddedSubscriptions();
