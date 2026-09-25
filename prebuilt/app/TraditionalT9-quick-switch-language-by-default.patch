@@ -1,0 +1,16 @@
+diff --git a/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsUI.java b/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsUI.java
+index 4d18bf6..564ceab 100644
+--- a/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsUI.java
++++ b/app/src/main/java/io/github/sspanak/tt9/preferences/settings/SettingsUI.java
+@@ -135,8 +135,10 @@ public class SettingsUI extends SettingsTyping {
+ 	}
+ 
+ 	public boolean getQuickSwitchLanguage() {
++		// CT07: # switches to the next language without the chooser dialog,
++		// whatever the number of enabled languages.
+ 		if (DEFAULT_QUICK_SWITCH_LANGUAGE == null) {
+-			DEFAULT_QUICK_SWITCH_LANGUAGE = !isMainLayoutStealth() && !areEnabledLanguagesMoreThanN(2);
++			DEFAULT_QUICK_SWITCH_LANGUAGE = true;
+ 		}
+ 
+ 		return prefs.getBoolean("pref_quick_switch_language", DEFAULT_QUICK_SWITCH_LANGUAGE);
