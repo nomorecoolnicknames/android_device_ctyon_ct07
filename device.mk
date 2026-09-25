@@ -120,6 +120,8 @@ PRODUCT_PACKAGES += \
     charger_res_images
 
 # Telephony: stock mtk-ril.so with the MT6735 RIL class (ril/), dual SIM.
+# Default network mode GSM/WCDMA: without IMS the modem does not register
+# for CS services on LTE, so calls need 3G/2G. LTE stays selectable.
 PRODUCT_PROPERTY_OVERRIDES += \
     ro.telephony.ril_class=MT6735 \
     persist.radio.multisim.config=dsds \
@@ -137,5 +139,5 @@ PRODUCT_PROPERTY_OVERRIDES += \
     persist.radio.fd.off.r8.counter=5 \
     ril.external.md=0 \
     ril.telephony.mode=0 \
-    ro.telephony.default_network=9,0 \
+    ro.telephony.default_network=0,0 \
     ro.logd.size.radio=256K
