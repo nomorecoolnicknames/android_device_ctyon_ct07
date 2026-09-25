@@ -111,6 +111,7 @@ TARGET_LD_SHIM_LIBS := \
     /system/lib/libcam.client.so|/system/vendor/lib/libmtkshim_gui.so \
     /system/lib/libmmsdkservice.feature.so|/system/vendor/lib/libmtkshim_gui.so \
     /system/lib/libmmsdkservice.feature.so|/system/vendor/lib/libmtkshim_ui.so \
+    /system/lib/libcam.utils.sensorlistener.so|/system/lib/libshim_ct07_sensor.so \
     /system/lib/libcam.utils.sensorlistener.so|/system/lib/libsensor.so
 
 -include vendor/ctyon/ct07/BoardConfigVendor.mk

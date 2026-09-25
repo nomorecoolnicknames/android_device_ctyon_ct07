@@ -19,3 +19,13 @@ LOCAL_SHARED_LIBRARIES := libicuuc libssl liblog
 LOCAL_C_INCLUDES := external/icu/icu4c/source/common
 LOCAL_MULTILIB := 32
 include $(BUILD_SHARED_LIBRARY)
+
+# SensorManager of the Pie size for the stock camera sensor listener, which
+# allocates it with the M size (sensormanager.cpp).
+include $(CLEAR_VARS)
+LOCAL_MODULE := libshim_ct07_sensor
+LOCAL_MODULE_TAGS := optional
+LOCAL_SRC_FILES := sensormanager.cpp
+LOCAL_SHARED_LIBRARIES := libdl liblog libsensor libutils
+LOCAL_MULTILIB := 32
+include $(BUILD_SHARED_LIBRARY)

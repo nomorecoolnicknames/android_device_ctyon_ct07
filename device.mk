@@ -166,7 +166,8 @@ PRODUCT_PACKAGES += \
     libmtkshim_gui \
     libmtkshim_ui \
     libshim_ct07 \
-    libshim_ct07_icu
+    libshim_ct07_icu \
+    libshim_ct07_sensor
 
 # gps.mt6737t.so needs libcurl.
 PRODUCT_PACKAGES += libcurl
