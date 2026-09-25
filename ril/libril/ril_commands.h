@@ -56,7 +56,13 @@
     {RIL_REQUEST_QUERY_CALL_WAITING, radio::getCallWaitingResponse, RIL_CMD_PROXY_1},
     {RIL_REQUEST_SET_CALL_WAITING, radio::setCallWaitingResponse, RIL_CMD_PROXY_2},
     {RIL_REQUEST_SMS_ACKNOWLEDGE, radio::acknowledgeLastIncomingGsmSmsResponse, RIL_CMD_PROXY_2},
+#ifdef MTK_RIL_DEVICE_IDENTITY_FROM_IMEI
+    /* Sent with a framework serial only by RadioImpl::getDeviceIdentity, see
+     * there; local (serial -1) sends never reach a response function. */
+    {RIL_REQUEST_GET_IMEI, radio::getImeiAsDeviceIdentityResponse, RIL_CMD_PROXY_3},
+#else
     {RIL_REQUEST_GET_IMEI, NULL, RIL_CMD_PROXY_3},
+#endif
     {RIL_REQUEST_GET_IMEISV, NULL, RIL_CMD_PROXY_3},
     {RIL_REQUEST_ANSWER, radio::acceptCallResponse, RIL_CMD_PROXY_2},
     {RIL_REQUEST_DEACTIVATE_DATA_CALL, radio::deactivateDataCallResponse, RIL_CMD_PROXY_5},

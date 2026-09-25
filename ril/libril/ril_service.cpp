@@ -1980,6 +1980,13 @@ Return<void> RadioImpl::getDeviceIdentity(int32_t serial) {
 #if VDBG
     RLOGD("getDeviceIdentity: serial %d", serial);
 #endif
+#ifdef MTK_RIL_DEVICE_IDENTITY_FROM_IMEI
+    /* The vendor RIL has no RIL_REQUEST_DEVICE_IDENTITY handler, and Pie
+     * learns the IMEI only through it. RIL_REQUEST_GET_IMEI is handled, also
+     * with the radio off: send it under the framework's serial and answer
+     * with getImeiAsDeviceIdentityResponse. */
+    dispatchVoid(serial, mSlotId, RIL_REQUEST_GET_IMEI);
+#else
 #ifdef MTK_HARDWARE
     /* Gated together with the DEVICE_IDENTITY override in ril.cpp -- see there. */
     if (android::mtkDevIdEmuEnabled()) {
@@ -1988,6 +1995,7 @@ Return<void> RadioImpl::getDeviceIdentity(int32_t serial) {
     }
 #endif
     dispatchVoid(serial, mSlotId, RIL_REQUEST_DEVICE_IDENTITY);
+#endif
     return Void();
 }
 
@@ -5954,6 +5962,39 @@ int radio::getDeviceIdentityResponse(int slotId,
 
     return 0;
 }
+
+#ifdef MTK_RIL_DEVICE_IDENTITY_FROM_IMEI
+/* RIL_REQUEST_GET_IMEI sent by RadioImpl::getDeviceIdentity: the response is
+ * the IMEI string, returned to the framework as getDeviceIdentityResponse
+ * with IMEISV, ESN and MEID empty. Vendor errors pass through unchanged. */
+int radio::getImeiAsDeviceIdentityResponse(int slotId,
+				    int responseType, int serial, RIL_Errno e, void *response,
+				    size_t responseLen) {
+    RLOGD("getImeiAsDeviceIdentityResponse: serial %d error %d", serial, e);
+
+    if (radioService[slotId]->mRadioResponse == NULL) {
+	RLOGE("getImeiAsDeviceIdentityResponse: radioService[%d]->mRadioResponse == NULL",
+		slotId);
+	return 0;
+    }
+
+    RadioResponseInfo responseInfo = {};
+    populateResponseInfo(responseInfo, serial, responseType, e);
+    hidl_string imei;
+    hidl_string emptyString;
+    if (response != NULL && responseLen == sizeof(char *)) {
+	imei = convertCharPtrToHidlString((char *) response);
+    } else if (e == RIL_E_SUCCESS) {
+	RLOGE("getImeiAsDeviceIdentityResponse: invalid response, len %zu", responseLen);
+	responseInfo.error = RadioError::INVALID_RESPONSE;
+    }
+    Return<void> retStatus
+	    = radioService[slotId]->mRadioResponse->getDeviceIdentityResponse(responseInfo,
+	    imei, emptyString, emptyString, emptyString);
+    radioService[slotId]->checkReturnStatus(retStatus);
+    return 0;
+}
+#endif
 
 int radio::exitEmergencyCallbackModeResponse(int slotId,
 					    int responseType, int serial, RIL_Errno e,

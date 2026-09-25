@@ -390,6 +390,12 @@ int getDeviceIdentityResponse(int slotId,
                              int responseType, int serial, RIL_Errno e, void *response,
                              size_t responselen);
 
+#ifdef MTK_RIL_DEVICE_IDENTITY_FROM_IMEI
+int getImeiAsDeviceIdentityResponse(int slotId,
+                                   int responseType, int serial, RIL_Errno e,
+                                   void *response, size_t responselen);
+#endif
+
 int exitEmergencyCallbackModeResponse(int slotId,
                                      int responseType, int serial, RIL_Errno e, void *response,
                                      size_t responselen);
