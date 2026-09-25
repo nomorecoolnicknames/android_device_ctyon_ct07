@@ -141,7 +141,7 @@ lib/hw/gralloc.mt6737t.so
 lib/hw/hwcomposer.mt6737t.so
 lib/hw/memtrack.mt6737t.so
 lib/libbwc.so
-lib/libdpframework.so
+-lib/libdpframework.so
 lib/libged.so
 lib/libgpu_aux.so
 lib/libgralloc_extra.so
