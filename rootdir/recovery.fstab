@@ -1,0 +1,10 @@
+# Recovery fstab (TARGET_RECOVERY_FSTAB): the updater-script takes the block
+# devices from here, and they must resolve under TWRP too, hence the raw
+# nodes (partition map in fstab.mt6735).
+
+/dev/block/mmcblk0p20 /system ext4 ro wait
+/dev/block/mmcblk0p22 /data ext4 noatime,nosuid,nodev,noauto_da_alloc,discard wait,check,encryptable=/dev/block/mmcblk0p19
+/dev/block/mmcblk0p21 /cache ext4 noatime,nosuid,nodev,noauto_da_alloc,discard wait,check
+/dev/block/mmcblk0p7 /boot emmc defaults defaults
+/dev/block/mmcblk0p8 /recovery emmc defaults defaults
+/dev/block/mmcblk0p6 /misc emmc defaults defaults

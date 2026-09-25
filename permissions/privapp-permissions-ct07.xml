@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- CT07 key mouse is platform-signed, so these are granted by signature;
+     the whitelist is here so a privapp enforce mode never drops them. -->
+<permissions>
+    <privapp-permissions package="org.ct07.keymouse">
+        <permission name="android.permission.INJECT_EVENTS"/>
+        <permission name="android.permission.WRITE_SECURE_SETTINGS"/>
+    </privapp-permissions>
+</permissions>

@@ -1,0 +1,9 @@
+# The stock audio HAL is the C2K build and always opens the CDMA voice
+# channel /dev/ttySDIO0, polling it every few milliseconds when it cannot.
+# This ROM does not run the C2K modem; a FIFO in place of the node keeps the
+# HAL's reader blocked instead. GSM/WCDMA/LTE call audio does not use it.
+on post-fs-data
+    rm /dev/ttySDIO0
+    exec - root audio -- /system/bin/mkfifo /dev/ttySDIO0
+    chown audioserver audio /dev/ttySDIO0
+    chmod 0660 /dev/ttySDIO0

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Tethering. The MT6735 Wi-Fi driver runs the access point on its own
+  interface ap0 (not wlan0); USB tethering uses rndis0 of the legacy
+  android_usb gadget.
+-->
+<resources>
+    <string-array translatable="false" name="config_tether_usb_regexs">
+        <item>"rndis\\d"</item>
+    </string-array>
+
+    <string-array translatable="false" name="config_tether_wifi_regexs">
+        <item>"ap\\d"</item>
+    </string-array>
+
+    <string-array translatable="false" name="config_tether_bluetooth_regexs">
+        <item>"bnep\\d"</item>
+        <item>"bt-pan"</item>
+    </string-array>
+</resources>

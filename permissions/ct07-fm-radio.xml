@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  /dev/fm is media:media 0660 and the FM radio app runs as system: map
+  ACCESS_FM_RADIO to the media group, which Pie's platform.xml does not do.
+-->
+<permissions>
+    <permission name="android.permission.ACCESS_FM_RADIO" >
+        <group gid="media" />
+    </permission>
+</permissions>

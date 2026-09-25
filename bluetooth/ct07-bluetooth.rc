@@ -1,0 +1,23 @@
+# Installed to /vendor/etc/init, where it sorts after
+# android.hardware.bluetooth@1.0-service.rc; the override below relies on that.
+
+# The HAL needs a local address from ro.bt.bdaddr_path; nvram_daemon sets
+# service.nvram_init=Ready once the NVRAM files are in place.
+on property:service.nvram_init=Ready
+    start btaddr_mtk
+
+service btaddr_mtk /vendor/bin/btaddr_mtk
+    user root
+    group system bluetooth
+    disabled
+    oneshot
+
+# libbluetooth_mtk reads the NVRAM record, which nvram_daemon keeps at
+# root:3008 (net_bt_stack, which Pie no longer names) 0660.
+service vendor.bluetooth-1-0 /vendor/bin/hw/android.hardware.bluetooth@1.0-service
+    override
+    class hal
+    capabilities BLOCK_SUSPEND NET_ADMIN SYS_NICE
+    user bluetooth
+    group bluetooth system 3008
+    writepid /dev/stune/foreground/tasks

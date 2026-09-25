@@ -1,0 +1,28 @@
+wifi.interface=wlan0
+wifi.tethering.interface=ap0
+wifi.direct.interface=p2p0
+ro.mediatek.wlan.wsc=1
+ro.mediatek.wlan.p2p=1
+mediatek.wlan.ctia=0
+ro.sys.usb.storage.type=mtp
+ro.sys.usb.bicr=yes
+ro.sys.usb.charging.only=yes
+ro.camera.sound.forced=0
+ro.audio.silent=0
+qemu.hw.mainkeys=1
+ro.kernel.zio=38,108,105,16
+dalvik.vm.checkjni=false
+persist.sys.isUsbOtgEnabled=true
+# Here and not in PRODUCT_PROPERTY_OVERRIDES, which splits on spaces.
+rild.libargs=-d /dev/ttyC0
+
+# HWUI partial redraw leaves black squares with the Mali-T720 r7p0 driver.
+debug.hwui.use_buffer_age=false
+debug.hwui.use_partial_updates=false
+
+# The speaker amplifier follows the output stream; a shorter standby delay
+# shortens the hiss after the last sound.
+ro.audio.flinger_standbytime_ms=1500
+# The stock audio HAL leaves audio_stream_in::get_capture_position unset;
+# the hardware/interfaces patch skips the call when this is set.
+ro.audio.legacy_hal_no_capture_position=1

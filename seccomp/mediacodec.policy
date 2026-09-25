@@ -1,0 +1,25 @@
+# Appended to the mediacodec seccomp policy for the stock MTK OMX components.
+sched_getparam: 1
+sched_getscheduler: 1
+sched_setaffinity: 1
+sched_getaffinity: 1
+mlock: 1
+munlock: 1
+mkdirat: 1
+uname: 1
+gettid: 1
+getpid: 1
+# Allowed by the Android 7 policy, dropped in 9.
+pselect6: 1
+connect: 1
+eventfd2: 1
+fcntl64: 1
+fdatasync: 1
+fsync: 1
+getcwd: 1
+getsockopt: 1
+recvfrom: 1
+sendto: 1
+sigaction: 1
+socket: 1
+sysinfo: 1

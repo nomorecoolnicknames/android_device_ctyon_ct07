@@ -1,0 +1,87 @@
+# USB gadget configurations for the legacy android_usb driver, trimmed from
+# the stock file: MTP, PTP, RNDIS and MIDI, each with and without adb, using
+# the stock MediaTek VID/PIDs. "none" and "adb" come from init.usb.rc.
+
+on init
+    setprop sys.usb.vid 0E8D
+
+on boot
+    write /sys/class/android_usb/android0/iManufacturer ${ro.product.manufacturer}
+    write /sys/class/android_usb/android0/iProduct ${ro.product.model}
+    write /sys/class/android_usb/android0/iSerial ${ro.serialno}
+    write /sys/class/android_usb/android0/f_rndis/wceis 1
+    write /sys/class/android_usb/android0/f_rndis/manufacturer ${ro.product.manufacturer}
+    write /sys/class/android_usb/android0/f_rndis/vendorID ${sys.usb.vid}
+
+# MTP
+on property:sys.usb.config=mtp && property:sys.usb.configfs=0
+    write /sys/class/android_usb/android0/enable 0
+    write /sys/class/android_usb/android0/idVendor ${sys.usb.vid}
+    write /sys/class/android_usb/android0/idProduct 2008
+    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+    write /sys/class/android_usb/android0/enable 1
+    setprop sys.usb.state ${sys.usb.config}
+
+on property:sys.usb.config=mtp,adb && property:sys.usb.configfs=0
+    write /sys/class/android_usb/android0/enable 0
+    write /sys/class/android_usb/android0/idVendor ${sys.usb.vid}
+    write /sys/class/android_usb/android0/idProduct 201D
+    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+    write /sys/class/android_usb/android0/enable 1
+    start adbd
+    setprop sys.usb.state ${sys.usb.config}
+
+# PTP
+on property:sys.usb.config=ptp && property:sys.usb.configfs=0
+    write /sys/class/android_usb/android0/enable 0
+    write /sys/class/android_usb/android0/idVendor ${sys.usb.vid}
+    write /sys/class/android_usb/android0/idProduct 200B
+    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+    write /sys/class/android_usb/android0/enable 1
+    setprop sys.usb.state ${sys.usb.config}
+
+on property:sys.usb.config=ptp,adb && property:sys.usb.configfs=0
+    write /sys/class/android_usb/android0/enable 0
+    write /sys/class/android_usb/android0/idVendor ${sys.usb.vid}
+    write /sys/class/android_usb/android0/idProduct 200C
+    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+    write /sys/class/android_usb/android0/enable 1
+    start adbd
+    setprop sys.usb.state ${sys.usb.config}
+
+# RNDIS (USB tethering)
+on property:sys.usb.config=rndis && property:sys.usb.configfs=0
+    write /sys/class/android_usb/android0/enable 0
+    write /sys/class/android_usb/android0/idVendor ${sys.usb.vid}
+    write /sys/class/android_usb/android0/idProduct 2004
+    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+    write /sys/class/android_usb/android0/bDeviceClass 224
+    write /sys/class/android_usb/android0/enable 1
+    setprop sys.usb.state ${sys.usb.config}
+
+on property:sys.usb.config=rndis,adb && property:sys.usb.configfs=0
+    write /sys/class/android_usb/android0/enable 0
+    write /sys/class/android_usb/android0/idVendor ${sys.usb.vid}
+    write /sys/class/android_usb/android0/idProduct 2005
+    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+    write /sys/class/android_usb/android0/enable 1
+    start adbd
+    setprop sys.usb.state ${sys.usb.config}
+
+# MIDI
+on property:sys.usb.config=midi && property:sys.usb.configfs=0
+    write /sys/class/android_usb/android0/enable 0
+    write /sys/class/android_usb/android0/idVendor ${sys.usb.vid}
+    write /sys/class/android_usb/android0/idProduct 2046
+    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+    write /sys/class/android_usb/android0/enable 1
+    setprop sys.usb.state ${sys.usb.config}
+
+on property:sys.usb.config=midi,adb && property:sys.usb.configfs=0
+    write /sys/class/android_usb/android0/enable 0
+    write /sys/class/android_usb/android0/idVendor ${sys.usb.vid}
+    write /sys/class/android_usb/android0/idProduct 2048
+    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+    write /sys/class/android_usb/android0/enable 1
+    start adbd
+    setprop sys.usb.state ${sys.usb.config}
