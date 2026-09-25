@@ -9109,12 +9109,11 @@ int radio::psNetworkStateChangedInd(int slotId,
 	    RLOGE("psNetworkStateChangedInd: invalid response");
 	    return 0;
 	}
-	int *p_int = (int *) response;
-	if (p_int[0] == 4) {
-	    Return<void> retStatus = radioService[slotId]->mRadioIndication->networkStateChanged(
+	/* Every change of the PS registration: on LTE without CS registration
+	 * nothing else makes the framework poll the registration state. */
+	Return<void> retStatus = radioService[slotId]->mRadioIndication->networkStateChanged(
 		convertIntToRadioIndicationType(indicationType));
-	    radioService[slotId]->checkReturnStatus(retStatus);
-	}
+	radioService[slotId]->checkReturnStatus(retStatus);
     } else {
 	RLOGE("psNetworkStateChangedInd: radioService[%d]->mRadioIndication == NULL",
 		slotId);
