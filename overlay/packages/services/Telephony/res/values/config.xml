@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The RIL is radio HAL 1.0, which has no startNetworkScan(): the manual
+  network search goes through Phone.getAvailableNetworks()
+  (RIL_REQUEST_QUERY_AVAILABLE_NETWORKS) instead.
+-->
+<resources>
+    <bool name="config_disable_TelephonyManager_network_scan">true</bool>
+</resources>
