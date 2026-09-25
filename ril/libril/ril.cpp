@@ -276,6 +276,18 @@ typedef struct {
 } RIL_IDENTITY;
 
 static RIL_IDENTITY Device_ID[SIM_COUNT];
+
+/* Gate for MTK's DEVICE_IDENTITY emulation, persist.vendor.ril.mtk_devid_emu,
+ * default off. It gates both halves together: the GET_IMEI/GET_IMEISV
+ * dispatches in RadioImpl::getDeviceIdentity and the override below that
+ * answers DEVICE_IDENTITY from Device_ID[]; one without the other would
+ * report an empty IMEI as success. Not cached, so it can be flipped on a
+ * running device. */
+bool mtkDevIdEmuEnabled() {
+    char prop[PROPERTY_VALUE_MAX] = {0};
+    property_get("persist.vendor.ril.mtk_devid_emu", prop, "0");
+    return prop[0] == '1';
+}
 #if (SIM_COUNT > 3)
   #define MAX_RIL_CHANNELS	24
 #elif (SIM_COUNT > 2)
@@ -287,6 +299,66 @@ static RIL_IDENTITY Device_ID[SIM_COUNT];
 #endif
 // for RIL_myChannelId (aka RIL_queryMyChannelId)
 static ThreadProxyId threadPid[MAX_RIL_CHANNELS]; // MAX_RIL_CHANNELS may be good enough
+
+/* Channel id of the request currently being dispatched on THIS thread, or -1.
+ * Set by my_enqueue around the direct onRequest() call so that a thread which
+ * is not one of mtk-ril's proxy threads (a HIDL binder thread) can still be
+ * resolved to the right RIL instance. See RIL_myProxyIdByThread(). */
+static pthread_key_t s_dispatchChannelKey;
+static pthread_once_t s_dispatchChannelKeyOnce = PTHREAD_ONCE_INIT;
+
+static void mtkMakeDispatchChannelKey(void)
+{
+    pthread_key_create(&s_dispatchChannelKey, NULL);
+}
+
+/* Value is stored as cid+1 so that an unset key (NULL) is distinguishable
+ * from a legitimate channel id of 0. Returns -1 when unset. */
+static int mtkGetDispatchChannel(void)
+{
+    pthread_once(&s_dispatchChannelKeyOnce, mtkMakeDispatchChannelKey);
+    void *v = pthread_getspecific(s_dispatchChannelKey);
+    return (v == NULL) ? -1 : ((int)(intptr_t)v) - 1;
+}
+
+static void mtkSetDispatchChannel(int cid)
+{
+    pthread_once(&s_dispatchChannelKeyOnce, mtkMakeDispatchChannelKey);
+    pthread_setspecific(s_dispatchChannelKey, (void *)(intptr_t)(cid + 1));
+}
+
+/* The fallback below is only safe once the modem has finished bring-up:
+ * before that it can drive MD1 into an exception loop. It stays inert until
+ * mtk.md1.status first reads "ready", then latches for the life of the
+ * process (rild is restarted with every modem cycle).
+ * persist.vendor.ril.ctxfix: "force" arms it at once, "off" disables it. */
+static int s_ctxfixArmed; /* 0 = unarmed, 1 = armed, -1 = disarmed for good */
+
+static int mtkCtxfixArmed(void)
+{
+    char val[PROPERTY_VALUE_MAX];
+
+    if (s_ctxfixArmed)
+	return s_ctxfixArmed > 0;
+    property_get("persist.vendor.ril.ctxfix", val, "");
+    if (!strcmp(val, "force")) {
+	RLOGI("ctxfix armed (persist.vendor.ril.ctxfix=force)");
+	s_ctxfixArmed = 1;
+	return 1;
+    }
+    if (!strcmp(val, "off")) {
+	RLOGI("ctxfix disabled (persist.vendor.ril.ctxfix=off)");
+	s_ctxfixArmed = -1;
+	return 0;
+    }
+    property_get("mtk.md1.status", val, "");
+    if (!strcmp(val, "ready")) {
+	RLOGI("ctxfix armed (mtk.md1.status=ready)");
+	s_ctxfixArmed = 1;
+	return 1;
+    }
+    return 0;
+}
 
 /*******************************************************************/
 static void grabPartialWakeLock();
@@ -305,7 +377,13 @@ extern "C" void RIL_onUnsolicitedResponse(int unsolResponse, const void *data,
 
 #ifdef MTK_HARDWARE
 #define RIL_UNSOL_RESPONSE(a, b, c, d) RIL_onUnsolicitedResponseSocket((a), (b), (c), (d))
-#define CALL_ONREQUEST(a, b, c, d, e) s_callbacksSocket.onRequest((a), (b), (c), (d), (e))
+/* mtk-ril.so refuses a command when another thread is mid-exchange on the
+ * same AT channel ("Occupied Thread"), and this libril reaches a channel from
+ * three threads: the binder request path, the event loop's proxy timed
+ * callbacks and the rild-mal server. Route every request through the
+ * per-channel mutex. */
+#define CALL_ONREQUEST(a, b, c, d, e) \
+        mtkOnRequestLocked((a), (b), (c), (d), ((RIL_SOCKET_ID)(e)))
 #define CALL_ONSTATEREQUEST(a) s_callbacksSocket.onStateRequest(a)
 #else
 #if defined(ANDROID_MULTI_SIM)
@@ -408,6 +486,15 @@ extern "C" int RIL_myProxyIdByThread()
 	i++;
     cid = (i < MAX_RIL_CHANNELS)? threadPid[i].cid : -1;
     i = RIL_queryMyProxyIdByThread();
+    int dispatchChannelId = mtkGetDispatchChannel();
+
+    if (((i < 0) || (i >= MAX_RIL_CHANNELS)) && (dispatchChannelId >= 0)
+	    && mtkCtxfixArmed()) {
+	/* Not one of mtk-ril's proxy threads. Returning the out-of-range value
+	 * makes the vendor index its per-RIL state array out of bounds, so use
+	 * the channel of the request we are dispatching instead. */
+	i = dispatchChannelId;
+    }
 #if VDBG
     RLOGD("RIL_queryMyProxyIdByThread:***cid=%d,i=%d,pthread_self()=%lu", cid, i, pthread_self());
 #endif
@@ -804,8 +891,13 @@ void clearPendingBuffer(BUF_FMTS bf, void *buf, size_t buflen)
 	    break;
 	case FMT_AttchAPN: {
 		RIL_InitialAttachApn *iaa = (RIL_InitialAttachApn *)buf;
-		memsetAndFreeStrings(5, iaa->apn, iaa->protocol, iaa->username,
-					iaa->password, iaa->operatorNumeric);
+#ifdef MTK_RIL_IAA_NO_ROAMING_PROTOCOL
+		memsetAndFreeStrings(5, iaa->apn, iaa->protocol,
+					iaa->username, iaa->password, iaa->operatorNumeric);
+#else
+		memsetAndFreeStrings(6, iaa->apn, iaa->protocol, iaa->roamingProtocol,
+					iaa->username, iaa->password, iaa->operatorNumeric);
+#endif
 	    }
 	    break;
 	case FMT_ImsSms: {
@@ -868,7 +960,8 @@ void my_dequeue(int slot, RILChannelId cid)
     if (p) {
 	RLOGD("dequeue: send pending request %s to %s",
 		requestToString(p->pRI->pCI->requestNumber), proxyString(cid));
-	s_callbacksSocket.onRequest(p->pRI->pCI->requestNumber,
+	/* Same channel, same mutex: this path bypasses CALL_ONREQUEST. */
+	mtkOnRequestLocked(p->pRI->pCI->requestNumber,
 			p->buf, p->buflen, p->pRI, p->pRI->socket_id);
 	if ((p->bf != FMT_VOID) && (p->buflen != 0)) {
 	    clearPendingBuffer(p->bf, p->buf, p->buflen);
@@ -956,7 +1049,13 @@ void my_enqueue(int request, void *buf, size_t buflen, BUF_FMTS bf, RequestInfo 
 #endif
 #endif	// RIL_CHANNEL_QUEUING
     {
+	/* This call runs on the caller's thread - for HIDL requests that is a
+	 * binder thread unknown to mtk-ril's thread->proxy table. Publish the
+	 * request's own channel so RIL_myProxyIdByThread() can fall back to it. */
+	int savedChannelId = mtkGetDispatchChannel();
+	mtkSetDispatchChannel((int)pRI->cid);
 	s_callbacksSocket.onRequest(request, buf, buflen, pRI, socket_id);
+	mtkSetDispatchChannel(savedChannelId);
 	if (bf != FMT_IGNORE) { // cleanup the memory if not FMT_IGNORE
 	    clearPendingBuffer(bf, buf, buflen);
 	}
@@ -998,6 +1097,615 @@ RIL_startEventLoop(void) {
 done:
     pthread_mutex_unlock(&s_startupMutex);
 }
+
+#ifdef MTK_HARDWARE
+/* ------------------------------------------------------------------------
+ * MAL socket server, /dev/socket/rild-mal
+ *
+ * mtkmal connects as a client and reconnects on its own; one client at a
+ * time.
+ *
+ * Request frame, as libmal_rilproxy writes it:
+ *     [u32 length]      big endian, the four words below plus the payload
+ *     [u32 header_size] little endian, 4
+ *     [u32 sim_id]      little endian, 0-based slot
+ *     [u32 request_id]  little endian
+ *     [u32 serial]      little endian, echoed back
+ *     [payload]
+ * and for request 2106 the payload is
+ *     [u32 channel][u32 at_cmd_len][at_cmd bytes]   (no terminator)
+ * ------------------------------------------------------------------------ */
+
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <private/android_filesystem_config.h>
+
+#define RIL_REQUEST_AT_COMMAND_WITH_PROXY 2106
+
+#define MAL_SOCKET_NAME     "rild-mal"
+#define MAL_HEADER_BYTES    16      /* header_size + sim_id + request_id + serial */
+#define MAL_MAX_FRAME       (64 * 1024)
+/* ---------------------------------------------------------------------
+ * Per-channel serialization for the MediaTek vendor RIL.
+ *
+ * mtk-ril.so keeps one context per AT channel (6 per SIM: URC, CMD_1..4,
+ * ATCI) and marks it in use by one thread for the duration of an AT
+ * exchange. A second thread reaching the same context does not wait: it logs
+ * "Occupied Thread: <cmd> send on <channel>" and fails the command.
+ * MediaTek's own libril ran everything for channel k on one thread; this one
+ * dispatches HIDL requests on binder threads, proxy timed callbacks on the
+ * event loop and MAL requests on the rild-mal thread.
+ *
+ * One mutex per channel, taken around every vendor onRequest (by the
+ * request's cid), around every proxy timed callback (run on a per-channel
+ * worker, which keeps the event loop free and the FIFO order per proxy) and
+ * around MAL's 2106 dispatch. The vendor's own boot-time init thread is
+ * outside this, so MAL requests are retried for a few seconds when the
+ * vendor fails them at once.
+ */
+#define MTK_CHANNEL_COUNT 24
+static pthread_mutex_t s_chMutex[MTK_CHANNEL_COUNT];
+static pthread_once_t  s_chOnce = PTHREAD_ONCE_INIT;
+
+static void mtkChannelOnceInit(void) {
+    for (int i = 0; i < MTK_CHANNEL_COUNT; i++) {
+        pthread_mutex_init(&s_chMutex[i], NULL);
+    }
+}
+
+static int mtkChannelIndex(int cid) {
+    if (cid < 0) return 0;
+    return cid % MTK_CHANNEL_COUNT;
+}
+
+static void mtkChannelLock(int cid) {
+    pthread_once(&s_chOnce, mtkChannelOnceInit);
+    pthread_mutex_lock(&s_chMutex[mtkChannelIndex(cid)]);
+}
+
+static void mtkChannelUnlock(int cid) {
+    pthread_mutex_unlock(&s_chMutex[mtkChannelIndex(cid)]);
+}
+
+/* Entry point for ril_service.cpp's CALL_ONREQUEST: the vendor runs one
+ * request at a time per channel, exactly as under its own libril. */
+void mtkOnRequestLocked(int request, void *data, size_t datalen,
+        RIL_Token t, RIL_SOCKET_ID socketId) {
+    RequestInfo *pRI = (RequestInfo *) t;
+    /* pRI is freed inside onRequest (RIL_onRequestComplete), so read the
+     * channel before the call and never touch the token afterwards. */
+    int cid = (pRI != NULL) ? pRI->cid : 0;
+    mtkChannelLock(cid);
+    /* The vendor entry points live in s_callbacksSocket. Not CALL_ONREQUEST:
+     * it expands to this function. */
+    s_callbacksSocket.onRequest(request, data, datalen, t, socketId);
+    mtkChannelUnlock(cid);
+}
+
+/* Proxy timed callbacks: the blob asks for "run this on proxy N's thread
+ * after T".  The timer still lives on the event loop; when it fires the job
+ * is handed to a worker thread dedicated to that channel, which runs it under
+ * the channel mutex.  One worker per channel keeps the stock FIFO order. */
+typedef struct MtkProxyJob {
+    RIL_TimedCallback   cb;
+    void               *param;
+    int                 ch;
+    struct MtkProxyJob *next;
+} MtkProxyJob;
+
+static pthread_mutex_t s_proxyQMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  s_proxyQCond  = PTHREAD_COND_INITIALIZER;
+static MtkProxyJob    *s_proxyQHead[MTK_CHANNEL_COUNT];
+static MtkProxyJob    *s_proxyQTail[MTK_CHANNEL_COUNT];
+static int             s_proxyWorkerUp[MTK_CHANNEL_COUNT];
+
+static void *mtkProxyWorker(void *arg) {
+    int ch = (int) (intptr_t) arg;
+    char name[16];
+    snprintf(name, sizeof(name), "mtkproxy%d", ch);
+    pthread_setname_np(pthread_self(), name);
+    for (;;) {
+        pthread_mutex_lock(&s_proxyQMutex);
+        while (s_proxyQHead[ch] == NULL) {
+            pthread_cond_wait(&s_proxyQCond, &s_proxyQMutex);
+        }
+        MtkProxyJob *job = s_proxyQHead[ch];
+        s_proxyQHead[ch] = job->next;
+        if (s_proxyQHead[ch] == NULL) s_proxyQTail[ch] = NULL;
+        pthread_mutex_unlock(&s_proxyQMutex);
+
+        mtkChannelLock(ch);
+        job->cb(job->param);
+        mtkChannelUnlock(ch);
+        free(job);
+    }
+    return NULL;
+}
+
+/* Runs on the event loop when the proxy timer expires. */
+static void mtkProxyTimerFired(void *param) {
+    MtkProxyJob *job = (MtkProxyJob *) param;
+    int ch = job->ch;
+    pthread_mutex_lock(&s_proxyQMutex);
+    job->next = NULL;
+    if (s_proxyQTail[ch] != NULL) s_proxyQTail[ch]->next = job;
+    else s_proxyQHead[ch] = job;
+    s_proxyQTail[ch] = job;
+    if (!s_proxyWorkerUp[ch]) {
+        pthread_t tid;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&tid, &attr, mtkProxyWorker,
+                           (void *) (intptr_t) ch) == 0) {
+            s_proxyWorkerUp[ch] = 1;
+        } else {
+            RLOGE("MTK: cannot start proxy worker %d: %s", ch, strerror(errno));
+        }
+        pthread_attr_destroy(&attr);
+    }
+    pthread_cond_broadcast(&s_proxyQCond);
+    pthread_mutex_unlock(&s_proxyQMutex);
+}
+
+
+extern "C" void
+RIL_requestProxyTimedCallbackMtk(RIL_TimedCallback callback, void *param,
+        const struct timeval *relativeTime, int proxyId) {
+    MtkProxyJob *job = (MtkProxyJob *) calloc(1, sizeof(MtkProxyJob));
+    if (job == NULL) {
+        RLOGE("MTK: out of memory for proxy callback, running it on the loop");
+        internalRequestTimedCallback(callback, param, relativeTime, proxyId);
+        return;
+    }
+    job->cb    = callback;
+    job->param = param;
+    job->ch    = mtkChannelIndex(proxyId);
+    internalRequestTimedCallback(mtkProxyTimerFired, job, relativeTime, proxyId);
+}
+
+#define MAL_MAX_INFLIGHT    16
+/* The blob fails a MAL command instantly when its channel is busy with its
+ * own boot-time init sequence (which runs outside our mutex).  That sequence
+ * lasts a few seconds; retry across it. */
+#define MAL_MAX_ATTEMPTS    10
+#define MAL_RETRY_DELAY_US  500000
+#define MAL_COMPLETE_WAIT_S 20
+
+static int s_malClientFd = -1;
+static pthread_mutex_t s_malMutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* The command string handed to onRequest has to outlive the call: MediaTek's
+ * RIL may queue the request rather than run it on this thread. It is released
+ * when the answer comes back, matched on the serial we gave it. */
+static struct {
+    int          inUse;
+    RequestInfo *pRI;   /* what mtk-ril hands back as the token */
+    uint32_t     serial;
+    uint32_t     simId; /* echoed back in the answer's header */
+    char        *cmd;
+    /* Filled by malComplete on the vendor's completion, consumed by
+     * malDispatch, which owns the slot for the whole retry loop. */
+    int          done;
+    uint32_t     err;
+    char        *text;
+    size_t       textLen;
+} s_malInflight[MAL_MAX_INFLIGHT];
+static pthread_mutex_t s_malDoneMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  s_malDoneCond  = PTHREAD_COND_INITIALIZER;
+
+/* A MAL request never goes on the pending-request list; its token is
+ * recognised by pointer at the top of RIL_onRequestComplete. */
+/* Returns the in-flight slot for a MAL token, or -1. The slot stays owned by
+ * malDispatch: it may re-issue the same token if the vendor failed it. */
+static int malClaim(RequestInfo *pRI) {
+    if (pRI == NULL) return -1;
+    for (int i = 0; i < MAL_MAX_INFLIGHT; i++) {
+        if (s_malInflight[i].inUse && s_malInflight[i].pRI == pRI) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static uint32_t malGetLE(const uint8_t *p) {
+    return (uint32_t) p[0] | ((uint32_t) p[1] << 8)
+         | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
+}
+
+static void malPutLE(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t) (v & 0xff);        p[1] = (uint8_t) ((v >> 8) & 0xff);
+    p[2] = (uint8_t) ((v >> 16) & 0xff); p[3] = (uint8_t) ((v >> 24) & 0xff);
+}
+
+static void malPutBE(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t) ((v >> 24) & 0xff); p[1] = (uint8_t) ((v >> 16) & 0xff);
+    p[2] = (uint8_t) ((v >> 8) & 0xff);  p[3] = (uint8_t) (v & 0xff);
+}
+
+static int malWriteAll(int fd, const uint8_t *buf, size_t len) {
+    size_t done = 0;
+    while (done < len) {
+        ssize_t n = write(fd, buf + done, len - done);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (n == 0) return -1;
+        done += (size_t) n;
+    }
+    return 0;
+}
+
+static int malReadAll(int fd, uint8_t *buf, size_t len) {
+    size_t done = 0;
+    while (done < len) {
+        ssize_t n = read(fd, buf + done, len - done);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (n == 0) return -1;      /* peer closed */
+        done += (size_t) n;
+    }
+    return 0;
+}
+
+/* Builds and writes one answer:
+ *
+ *     [u32 length]   BE, 24 + payload, not counting itself
+ *     [u32 8]        header blob length
+ *     [u32 1]        flags, bit 0: the slot follows
+ *     [u32 sim_id]   echoed from the request
+ *     [u32 0]        type: solicited
+ *     [u32 serial]   echoed; the client matches on its low byte
+ *     [u32 error]
+ *     [payload]      for an AT answer: [u32 ignored][text]
+ *
+ * This is mtk-rilproxy.so's addHeaderToResponse layout, which
+ * libmal_rilproxy expects. */
+static void malSendFrame(uint32_t simId, uint32_t serial, uint32_t err,
+        const char *text, size_t textLen) {
+    size_t payloadLen = 4 + textLen;        /* [u32 ignored][text] */
+    size_t bodyLen = 24 + payloadLen;
+    uint8_t *frame = (uint8_t *) malloc(4 + bodyLen);
+    if (frame == NULL) {
+        RLOGE("MAL: out of memory answering serial %u", serial);
+        return;
+    }
+
+    malPutBE(frame, (uint32_t) bodyLen);
+    malPutLE(frame + 4,  8);            /* header blob length */
+    malPutLE(frame + 8,  1);            /* flags: slot present */
+    malPutLE(frame + 12, simId);
+    malPutLE(frame + 16, 0);            /* RESPONSE_SOLICITED */
+    malPutLE(frame + 20, serial);
+    malPutLE(frame + 24, err);
+    malPutLE(frame + 28, (uint32_t) textLen);   /* client skips this word */
+    if (textLen > 0) memcpy(frame + 32, text, textLen);
+
+    pthread_mutex_lock(&s_malMutex);
+    int fd = s_malClientFd;
+    if (fd >= 0 && malWriteAll(fd, frame, 4 + bodyLen) < 0) {
+        RLOGE("MAL: write failed for serial %u: %s", serial, strerror(errno));
+    }
+    pthread_mutex_unlock(&s_malMutex);
+
+    RLOGD("MAL: < serial=%u sim=%u error=%u len=%zu",
+          serial, simId, err, textLen);
+    free(frame);
+}
+
+/* Called from RIL_onRequestComplete once the token is known to be ours.
+ * Parks the answer in the slot and wakes malDispatch, which decides whether
+ * to answer MAL or to try the command again. */
+static void malComplete(int slot, RIL_Errno e, void *response, size_t responselen) {
+    const char *text = (const char *) response;
+    size_t textLen = 0;
+    if (text != NULL && responselen > 0) {
+        /* mtk-ril.so answers 2106 with the modem's raw reply as a C string --
+         * intermediate lines and the final result joined by CRLF. Trust
+         * whichever of the two lengths is shorter so a missing terminator
+         * cannot walk off the end of the buffer. */
+        textLen = strnlen(text, responselen);
+    }
+    char *copy = NULL;
+    if (textLen > 0) {
+        copy = (char *) malloc(textLen + 1);
+        if (copy != NULL) {
+            memcpy(copy, text, textLen);
+            copy[textLen] = '\0';
+        } else {
+            textLen = 0;
+        }
+    }
+    pthread_mutex_lock(&s_malDoneMutex);
+    free(s_malInflight[slot].text);
+    s_malInflight[slot].text    = copy;
+    s_malInflight[slot].textLen = textLen;
+    s_malInflight[slot].err     = (uint32_t) e;
+    s_malInflight[slot].done    = 1;
+    pthread_cond_broadcast(&s_malDoneCond);
+    pthread_mutex_unlock(&s_malDoneMutex);
+}
+
+static void malDispatch(uint32_t simId, uint32_t requestId, uint32_t serial,
+        const uint8_t *payload, size_t payloadLen) {
+    if (requestId != RIL_REQUEST_AT_COMMAND_WITH_PROXY) {
+        /* Only 2106 (AT command) is served. Answer anything else with
+         * GENERIC_FAILURE so the client does not wait for the serial. */
+        RLOGW("MAL: request %u not served yet, failing serial %u",
+              requestId, serial);
+        malSendFrame(simId, serial, RIL_E_GENERIC_FAILURE, NULL, 0);
+        return;
+    }
+
+    if (payloadLen < 8) {
+        RLOGE("MAL: 2106 payload too short (%zu)", payloadLen);
+        malSendFrame(simId, serial, RIL_E_GENERIC_FAILURE, NULL, 0);
+        return;
+    }
+
+    uint32_t channel = malGetLE(payload);
+    uint32_t cmdLen  = malGetLE(payload + 4);
+    if (cmdLen > payloadLen - 8) {
+        RLOGE("MAL: 2106 says %u command bytes but only %zu are there",
+              cmdLen, payloadLen - 8);
+        malSendFrame(simId, serial, RIL_E_GENERIC_FAILURE, NULL, 0);
+        return;
+    }
+
+    char *cmd = (char *) malloc(cmdLen + 1);
+    if (cmd == NULL) {
+        malSendFrame(simId, serial, RIL_E_NO_MEMORY, NULL, 0);
+        return;
+    }
+    memcpy(cmd, payload + 8, cmdLen);
+    cmd[cmdLen] = '\0';
+
+    int slot = -1;
+    for (int i = 0; i < MAL_MAX_INFLIGHT; i++) {
+        if (!s_malInflight[i].inUse) { slot = i; break; }
+    }
+    if (slot < 0) {
+        RLOGE("MAL: %d requests already in flight, dropping serial %u",
+              MAL_MAX_INFLIGHT, serial);
+        free(cmd);
+        malSendFrame(simId, serial, RIL_E_GENERIC_FAILURE, NULL, 0);
+        return;
+    }
+    s_malInflight[slot].inUse  = 1;
+    s_malInflight[slot].serial = serial;
+    s_malInflight[slot].simId  = simId;
+    s_malInflight[slot].cmd    = cmd;
+
+    RequestInfo *pRI = (RequestInfo *) calloc(1, sizeof(RequestInfo));
+    if (pRI == NULL) {
+        free(s_malInflight[slot].cmd);
+        s_malInflight[slot].cmd   = NULL;
+        s_malInflight[slot].inUse = 0;
+        malSendFrame(simId, serial, RIL_E_NO_MEMORY, NULL, 0);
+        return;
+    }
+    /* client stays NULL: the vendor reads offset 0 and takes NULL as "not a
+     * MAL-internal token" (see RequestInfo in ril_internal.h). */
+    pRI->token     = (int) serial;
+    /* pCI must not be indexed out of s_commands, which only covers the AOSP
+     * range; nothing dereferences it on our path, and the generic one never
+     * sees this request. */
+    pRI->pCI       = NULL;
+    pRI->socket_id = (simId + 1 <= SIM_COUNT)
+                        ? (RIL_SOCKET_ID) (simId + 1) : RIL_SOCKET_1;
+    /* Ordinary requests use channel 0 as well. */
+    /* cid is a RILChannelId here. */
+    pRI->cid       = (RILChannelId) 0;
+
+    /* The completion path only records the answer and wakes this thread,
+     * which sends it. */
+    s_malInflight[slot].pRI     = pRI;
+    s_malInflight[slot].done    = 0;
+    s_malInflight[slot].err     = 0;
+    s_malInflight[slot].text    = NULL;
+    s_malInflight[slot].textLen = 0;
+
+    /* mtk-ril.so sends proxy AT commands on the URC channel of the SIM
+     * (getChannelCtxbyProxy(sim) -> ctx[sim*6]). */
+    int chan = (int) simId * 6;
+    int attempt;
+    int timedOut = 0;
+    for (attempt = 1; ; attempt++) {
+        RLOGD("MAL: > serial=%u sim=%u channel=%u attempt=%d cmd=(%s)",
+              serial, simId, channel, attempt, cmd);
+        pthread_mutex_lock(&s_malDoneMutex);
+        s_malInflight[slot].done = 0;
+        pthread_mutex_unlock(&s_malDoneMutex);
+
+        mtkChannelLock(chan);
+        /* Deliberately NOT CALL_ONREQUEST: that macro now takes the same
+         * mutex, and it is not recursive. */
+        s_callbacksSocket.onRequest(RIL_REQUEST_AT_COMMAND_WITH_PROXY,
+                                    cmd, cmdLen + 1, pRI, pRI->socket_id);
+        mtkChannelUnlock(chan);
+
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += MAL_COMPLETE_WAIT_S;
+        pthread_mutex_lock(&s_malDoneMutex);
+        while (!s_malInflight[slot].done) {
+            if (pthread_cond_timedwait(&s_malDoneCond, &s_malDoneMutex,
+                                       &deadline) == ETIMEDOUT) {
+                break;
+            }
+        }
+        timedOut = !s_malInflight[slot].done;
+        uint32_t err = s_malInflight[slot].err;
+        pthread_mutex_unlock(&s_malDoneMutex);
+
+        if (timedOut) {
+            RLOGE("MAL: serial %u (%s) never completed", serial, cmd);
+            break;
+        }
+        if (err == 0 || attempt >= MAL_MAX_ATTEMPTS) break;
+        RLOGW("MAL: serial %u (%s) failed with error %u on attempt %d -- "
+              "channel busy? retrying in %d ms",
+              serial, cmd, err, attempt, MAL_RETRY_DELAY_US / 1000);
+        usleep(MAL_RETRY_DELAY_US);
+    }
+
+    pthread_mutex_lock(&s_malDoneMutex);
+    uint32_t finalErr = timedOut ? (uint32_t) RIL_E_GENERIC_FAILURE
+                                 : s_malInflight[slot].err;
+    char *text = s_malInflight[slot].text;
+    size_t textLen = s_malInflight[slot].textLen;
+    s_malInflight[slot].text = NULL;
+    s_malInflight[slot].textLen = 0;
+    pthread_mutex_unlock(&s_malDoneMutex);
+
+    malSendFrame(simId, serial, finalErr, text, textLen);
+    free(text);
+    free(s_malInflight[slot].cmd);
+    s_malInflight[slot].cmd = NULL;
+    s_malInflight[slot].pRI = NULL;
+    if (!timedOut) {
+        /* On a timeout the blob may still complete later with this token;
+         * leaking one RequestInfo beats a use-after-free. */
+        free(pRI);
+    }
+    s_malInflight[slot].inUse = 0;
+}
+
+static void *malServerLoop(void *param) {
+    int listenFd = (int) (intptr_t) param;
+    uint8_t *body = (uint8_t *) malloc(MAL_MAX_FRAME);
+    if (body == NULL) return NULL;
+
+    for (;;) {
+        int fd = accept(listenFd, NULL, NULL);
+        if (fd < 0) {
+            if (errno == EINTR) continue;
+            RLOGE("MAL: accept failed: %s", strerror(errno));
+            sleep(1);
+            continue;
+        }
+        RLOGI("MAL: client connected on " MAL_SOCKET_NAME);
+
+        pthread_mutex_lock(&s_malMutex);
+        s_malClientFd = fd;
+        pthread_mutex_unlock(&s_malMutex);
+
+        for (;;) {
+            uint8_t lenBuf[4];
+            if (malReadAll(fd, lenBuf, 4) < 0) break;
+            uint32_t bodyLen = ((uint32_t) lenBuf[0] << 24) | ((uint32_t) lenBuf[1] << 16)
+                             | ((uint32_t) lenBuf[2] << 8)  |  (uint32_t) lenBuf[3];
+            if (bodyLen < MAL_HEADER_BYTES || bodyLen > MAL_MAX_FRAME) {
+                RLOGE("MAL: frame length %u out of range, dropping connection",
+                      bodyLen);
+                break;
+            }
+            if (malReadAll(fd, body, bodyLen) < 0) break;
+
+            /* [u32 header_size][header bytes][request_id][serial][payload];
+             * header_size has always been 4 (the slot). */
+            uint32_t hdrLen = malGetLE(body);
+            if (hdrLen > bodyLen || bodyLen - hdrLen < 12) {
+                RLOGE("MAL: header length %u does not fit a %u byte frame",
+                      hdrLen, bodyLen);
+                break;
+            }
+            malDispatch(hdrLen >= 4 ? malGetLE(body + 4) : 0,
+                        malGetLE(body + 4 + hdrLen),
+                        malGetLE(body + 8 + hdrLen),
+                        body + 12 + hdrLen,
+                        bodyLen - 12 - hdrLen);
+        }
+
+        RLOGI("MAL: client gone, waiting for the next one");
+        pthread_mutex_lock(&s_malMutex);
+        s_malClientFd = -1;
+        pthread_mutex_unlock(&s_malMutex);
+        close(fd);
+    }
+    return NULL;
+}
+
+/* Bind the MAL socket in a library constructor, before rild drops to the
+ * radio uid: /dev/socket is root-only, so a later bind() fails with EACCES.
+ * init does not always provide the socket from the service's socket line.
+ * The descriptor from init is still preferred when there is one. */
+static int s_mtkMalEarlyFd = -1;
+
+__attribute__((constructor)) static void mtkMalEarlyBind(void) {
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "/dev/socket/" MAL_SOCKET_NAME);
+
+    RLOGI("MAL-EARLY: constructor running as uid=%d euid=%d", (int) getuid(), (int) geteuid());
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        RLOGE("MAL-EARLY: socket(): %s", strerror(errno));
+        return;
+    }
+    unlink(addr.sun_path);
+    if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+        RLOGE("MAL-EARLY: bind %s as uid=%d: %s", addr.sun_path, (int) geteuid(), strerror(errno));
+        close(fd);
+        return;
+    }
+    RLOGI("MAL-EARLY: bound %s", addr.sun_path);
+    chmod(addr.sun_path, 0660);
+    chown(addr.sun_path, 0, AID_RADIO);
+    s_mtkMalEarlyFd = fd;
+}
+
+static void RIL_startMalSocketServer(void) {
+    int fd = android_get_control_socket(MAL_SOCKET_NAME);
+    if (fd < 0) fd = s_mtkMalEarlyFd;
+    if (fd < 0) {
+        /* No descriptor from init and none from the constructor: create it. */
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        snprintf(addr.sun_path, sizeof(addr.sun_path),
+                 "/dev/socket/" MAL_SOCKET_NAME);
+
+        fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) {
+            RLOGE("MAL: socket(): %s", strerror(errno));
+            return;
+        }
+        unlink(addr.sun_path);
+        if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+            RLOGE("MAL: bind %s: %s", addr.sun_path, strerror(errno));
+            close(fd);
+            return;
+        }
+        /* 660 root:radio, matching what the init line would have produced. */
+        chmod(addr.sun_path, 0660);
+        if (chown(addr.sun_path, 0, AID_RADIO) < 0) {
+            RLOGW("MAL: chown %s to radio: %s", addr.sun_path, strerror(errno));
+        }
+        RLOGI("MAL: no inherited descriptor; created " MAL_SOCKET_NAME " myself");
+    }
+    if (listen(fd, 4) < 0) {
+        RLOGE("MAL: listen on " MAL_SOCKET_NAME " failed: %s", strerror(errno));
+        return;
+    }
+
+    pthread_t tid;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&tid, &attr, malServerLoop, (void *) (intptr_t) fd) != 0) {
+        RLOGE("MAL: cannot start the server thread: %s", strerror(errno));
+        return;
+    }
+    RLOGI("MAL: listening on " MAL_SOCKET_NAME);
+}
+#endif /* MTK_HARDWARE */
 
 // Used for testing purpose only.
 extern "C" void RIL_setcallbacks (const RIL_RadioFunctionsSocket *callbacks) {
@@ -1062,6 +1770,10 @@ RIL_register (const RIL_RadioFunctions *callbacks) {
 
     radio::registerService(&s_callbacksSocket, s_commands);
     RLOGI("RILHIDL called registerService");
+
+#ifdef MTK_HARDWARE
+    RIL_startMalSocketServer();
+#endif
 
 }
 
@@ -1269,6 +1981,17 @@ RIL_onRequestComplete(RIL_Token t, RIL_Errno s_e, void *s_response, size_t s_res
 
     pRI = (RequestInfo *)t;
 
+#ifdef MTK_HARDWARE
+    {
+        int malSlot = malClaim(pRI);
+        if (malSlot >= 0) {
+            /* malDispatch owns the token and frees it when it is done. */
+            malComplete(malSlot, e, response, responselen);
+            return;
+        }
+    }
+#endif
+
     if (!checkAndDequeueRequestInfoIfAck(pRI, false)) {
 	RLOGE ("RIL_onRequestComplete: invalid RIL_Token");
 	return;
@@ -1289,20 +2012,25 @@ RIL_onRequestComplete(RIL_Token t, RIL_Errno s_e, void *s_response, size_t s_res
 	if (pRI->pCI->requestNumber == RIL_REQUEST_GET_IMEI) {
 	    int i = (int)socket_id;
 	    RLOGD("SOCKET_ID_IMEI= %d", i);
-            Device_ID[i].imei = (char*) response;
+            /* The vendor owns `response`; keep a copy. */
+	    free(Device_ID[i].imei);
+	    Device_ID[i].imei = response ? strdup((const char *) response) : NULL;
 	    RLOGD("IMEI=%s", Device_ID[i].imei);
 	}
 	else if (pRI->pCI->requestNumber == RIL_REQUEST_GET_IMEISV) {
 	    int i = (int)socket_id;
 	    RLOGD("SOCKET_ID_IMEI_SV= %d", i);
-            Device_ID[i].imeisv = (char*) response;
+            free(Device_ID[i].imeisv);
+	    Device_ID[i].imeisv = response ? strdup((const char *) response) : NULL;
 	    RLOGD("IMEISV=%s", Device_ID[i].imeisv);
 	}
 	goto done;
     }
 
 // *** handle unsupported but necessary requests
-    if (pRI->pCI->requestNumber == RIL_REQUEST_DEVICE_IDENTITY) {
+    /* requestNumber first: the property is read only for DEVICE_IDENTITY. */
+    if (pRI->pCI->requestNumber == RIL_REQUEST_DEVICE_IDENTITY &&
+	    mtkDevIdEmuEnabled()) {
 	RLOGD("Overriding RIL_REQUEST_DEVICE_IDENTITY");
 	int i = (int)socket_id;
 	RLOGD("SOCKET_ID_IDENTITY= %d", i);

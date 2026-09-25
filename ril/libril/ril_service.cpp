@@ -53,6 +53,14 @@
 #include <hwbinder/IPCThreadState.h>
 #include <hwbinder/ProcessState.h>
 #include <ril_service.h>
+#include <unistd.h>
+#include <string.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
 #include <hidl/HidlTransportSupport.h>
 #include <utils/SystemClock.h>
 #include <inttypes.h>
@@ -1249,10 +1257,35 @@ Return<void> RadioImpl::iccIOForApp(int32_t serial, const IccIo& iccIo) {
 	return Void();
     }
 
+    /* TS 27.007: <pathid> excludes the MF. For files directly under the MF
+     * (EF_ICCID) the framework passes "3F00", which the MTK RIL forwards as
+     * AT+CRSM=192,12258,0,0,15,,"3F00" and the card rejects with 6A80, so the
+     * ICCID, and with it the subscription, is never read. Deeper paths are
+     * already stripped of their 3F00 prefix downstream. */
+    /* Pass NULL, not an empty string: the MTK RIL chooses the AT format on
+     * path != NULL, and an empty path produces a command the modem rejects.
+     * The string is not freed here: my_enqueue keeps a shallow copy. */
+    if (rilIccIo.path != NULL && strcmp(rilIccIo.path, "3F00") == 0) {
+	RLOGD("iccIOForApp: bare MF pathid -> NULL, fileid %d", rilIccIo.fileid);
+	rilIccIo.path = NULL;
+    }
+
     rilIccIo.p1 = iccIo.p1;
     rilIccIo.p2 = iccIo.p2;
 #ifdef MTK_HARDWARE
-    rilIccIo.p3 = (iccIo.command == 0xc0 && iccIo.p3 == 0)? 15 : iccIo.p3;
+    /* Le for GET RESPONSE. The framework asks for 15 bytes, the size of a
+     * TS 51.011 answer. A UICC answers with a longer TS 102 221 FCP template
+     * whose file-size tag 0x80 comes last, so 15 cuts it off; the framework
+     * parses the full template (UiccTlvData). 64 by default,
+     * persist.vendor.ril.gr_le overrides it (0 does not work). */
+    {
+	char mtkLeProp[PROPERTY_VALUE_MAX] = {0};
+	int mtkLe = 64;
+	if (property_get("persist.vendor.ril.gr_le", mtkLeProp, NULL) > 0) {
+	    mtkLe = atoi(mtkLeProp);
+	}
+	rilIccIo.p3 = (iccIo.command == 0xc0) ? mtkLe : iccIo.p3;
+    }
 #else
     rilIccIo.p3 = iccIo.p3;
 #endif
@@ -1948,8 +1981,11 @@ Return<void> RadioImpl::getDeviceIdentity(int32_t serial) {
     RLOGD("getDeviceIdentity: serial %d", serial);
 #endif
 #ifdef MTK_HARDWARE
-    dispatchVoid(-1, mSlotId, RIL_REQUEST_GET_IMEI);	// ** prepare for
-    dispatchVoid(-1, mSlotId, RIL_REQUEST_GET_IMEISV);	// not supported
+    /* Gated together with the DEVICE_IDENTITY override in ril.cpp -- see there. */
+    if (android::mtkDevIdEmuEnabled()) {
+	dispatchVoid(-1, mSlotId, RIL_REQUEST_GET_IMEI);	// ** prepare for
+	dispatchVoid(-1, mSlotId, RIL_REQUEST_GET_IMEISV);	// not supported
+    }
 #endif
     dispatchVoid(serial, mSlotId, RIL_REQUEST_DEVICE_IDENTITY);
     return Void();
@@ -2080,10 +2116,11 @@ Return<void> RadioImpl::setInitialAttachApn(int32_t serial, const DataProfileInf
 	    return Void();
 	}
 
-	const hidl_string &protocol =
-		(isRoaming ? dataProfileInfo.roamingProtocol : dataProfileInfo.protocol);
-
-	if (!copyHidlStringToRil(&iaa.protocol, protocol, pRI)) {
+#ifdef MTK_RIL_IAA_NO_ROAMING_PROTOCOL
+	/* This RIL_InitialAttachApn has no roamingProtocol member (see ril.h):
+	 * pick the protocol the way AOSP does. */
+	if (!copyHidlStringToRil(&iaa.protocol,
+		isRoaming ? dataProfileInfo.roamingProtocol : dataProfileInfo.protocol, pRI)) {
 	    memsetAndFreeStrings(1, iaa.apn);
 	    return Void();
 	}
@@ -2096,11 +2133,36 @@ Return<void> RadioImpl::setInitialAttachApn(int32_t serial, const DataProfileInf
 	    memsetAndFreeStrings(3, iaa.apn, iaa.protocol, iaa.username);
 	    return Void();
 	}
+#else
+	/* Send both protocols: this RIL_InitialAttachApn has a roamingProtocol
+	 * member and the vendor chooses between them. */
+	if (!copyHidlStringToRil(&iaa.protocol, dataProfileInfo.protocol, pRI)) {
+	    memsetAndFreeStrings(1, iaa.apn);
+	    return Void();
+	}
+	if (!copyHidlStringToRil(&iaa.roamingProtocol, dataProfileInfo.roamingProtocol, pRI)) {
+	    memsetAndFreeStrings(2, iaa.apn, iaa.protocol);
+	    return Void();
+	}
+	iaa.authtype = (int) dataProfileInfo.authType;
+	if (!copyHidlStringToRil(&iaa.username, dataProfileInfo.user, pRI)) {
+	    memsetAndFreeStrings(3, iaa.apn, iaa.protocol, iaa.roamingProtocol);
+	    return Void();
+	}
+	if (!copyHidlStringToRil(&iaa.password, dataProfileInfo.password, pRI)) {
+	    memsetAndFreeStrings(4, iaa.apn, iaa.protocol, iaa.roamingProtocol, iaa.username);
+	    return Void();
+	}
+#endif
 #ifdef MTK_HARDWARE
 	if (iaa.apn == NULL)
 	    iaa.apn = (char *) calloc(1, sizeof(char));
 	if (iaa.protocol == NULL)
 	    iaa.protocol = (char *) calloc(1, sizeof(char));
+#ifndef MTK_RIL_IAA_NO_ROAMING_PROTOCOL
+	if (iaa.roamingProtocol == NULL)
+	    iaa.roamingProtocol = (char *) calloc(1, sizeof(char));
+#endif
 //	if (iaa.authtype ==0)
 //		iaa.authtype = -1;
 	if (iaa.username == NULL)
@@ -2696,7 +2758,18 @@ Return<void> RadioImpl::getRadioCapability(int32_t serial) {
 #if VDBG
     RLOGD("getRadioCapability: serial %d", serial);
 #endif
+#ifdef MTK_HARDWARE
+    /* Answered with REQUEST_NOT_SUPPORTED: in the vendor RIL this request
+     * crashes rild (invalid channel context in rilOemMain). The framework
+     * handles NOT_SUPPORTED, as for RIL_REQUEST_SIGNAL_STRENGTH above. */
+    RequestInfo *pRI = android::addRequestToList(serial, mSlotId,
+            RIL_REQUEST_GET_RADIO_CAPABILITY);
+    if (pRI != NULL) {
+        sendErrorResponse(pRI, RIL_E_REQUEST_NOT_SUPPORTED);
+    }
+#else
     dispatchVoid(serial, mSlotId, RIL_REQUEST_GET_RADIO_CAPABILITY);
+#endif
     return Void();
 }
 
@@ -3910,19 +3983,42 @@ int radio::getOperatorResponse(int slotId,
 	    char **resp = (char **) response;
     RLOGD("getOperatorResponse: numStrings=%d", numStrings);
 #ifdef MTK_HARDWARE
-//	    longName = convertCharPtrToHidlString(resp[0]);
-//	    numeric = convertCharPtrToHidlString(resp[2]);
-	    char *p = (char*)getname(atoi(resp[0]));
-	    if (p == NULL) {
-		longName == numeric;
-		shortName = numeric;
-	    } else {
-		longName = convertCharPtrToHidlString(p);
-	        if (strlen(p) > 24)
-		    shortName == numeric;
-		else
-		    shortName == longName;
+	    /* Return all three fields. The numeric operator was never returned
+	     * (and three assignments were comparisons), so the framework could not
+	     * match any APN against the registered operator and never set up a
+	     * data call. The vendor queries +COPS in numeric format, so the
+	     * alpha fields may be empty or hold the numeric; fill them from the
+	     * PLMN name table then. */
+	    longName  = convertCharPtrToHidlString(resp[0]);
+	    shortName = (numStrings > 1) ? convertCharPtrToHidlString(resp[1]) : longName;
+	    numeric   = (numStrings > 2) ? convertCharPtrToHidlString(resp[2]) : hidl_string();
+
+	    if (numeric.size() == 0) {
+		for (int i = 0; i < numStrings; i++) {
+		    const char *s = resp[i];
+		    size_t n, d;
+		    if (s == NULL)
+			continue;
+		    n = strlen(s);
+		    if (n < 5 || n > 6)
+			continue;
+		    for (d = 0; d < n && s[d] >= '0' && s[d] <= '9'; d++)
+			;
+		    if (d == n) {
+			numeric = convertCharPtrToHidlString(resp[i]);
+			break;
+		    }
+		}
 	    }
+	    if (numeric.size() > 0) {
+		char *nm = (char *)getname(atoi(numeric.c_str()));
+		if (longName.size() == 0 || strcmp(longName.c_str(), numeric.c_str()) == 0)
+		    longName = (nm != NULL) ? convertCharPtrToHidlString(nm) : numeric;
+		if (shortName.size() == 0 || strcmp(shortName.c_str(), numeric.c_str()) == 0)
+		    shortName = longName;
+	    }
+	    RLOGD("getOperatorResponse: long=[%s] short=[%s] numeric=[%s]",
+		  longName.c_str(), shortName.c_str(), numeric.c_str());
 #else
 	    longName = convertCharPtrToHidlString(resp[0]);
 	    shortName = (numStrings > 1) ? convertCharPtrToHidlString(resp[1]) : longName;
@@ -4042,6 +4138,96 @@ int radio::sendSMSExpectMoreResponse(int slotId,
     return 0;
 }
 
+/* Bring a data interface administratively up. Nothing else sets IFF_UP on
+ * it, and netd then fails to install the routes ("Network is down"). */
+/* Set the IPv4 address the modem granted on a data interface;
+ * ifc_ccmni_md_configure() leaves it unset. /32: the link is
+ * point-to-point. */
+static void mtkIfaceAddr(const char *ifname, const char *addresses, int mtu) {
+    struct ifreq ifr;
+    struct sockaddr_in *sin;
+    char first[64];
+    size_t i;
+    int s;
+
+    if (ifname == NULL || ifname[0] == 0 || addresses == NULL || addresses[0] == 0)
+        return;
+    /* the field can be "10.0.0.1", "10.0.0.1/32" or a space-separated list */
+    for (i = 0; i < sizeof(first) - 1 && addresses[i] != 0
+                && addresses[i] != ' ' && addresses[i] != '/'; i++)
+        first[i] = addresses[i];
+    first[i] = 0;
+    if (first[0] == 0)
+        return;
+
+    s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) {
+        RLOGE("mtkIfaceAddr(%s): socket: %s", ifname, strerror(errno));
+        return;
+    }
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    sin = (struct sockaddr_in *) &ifr.ifr_addr;
+    sin->sin_family = AF_INET;
+    if (inet_pton(AF_INET, first, &sin->sin_addr) != 1) {
+        RLOGE("mtkIfaceAddr(%s): bad address [%s]", ifname, first);
+        close(s);
+        return;
+    }
+    if (ioctl(s, SIOCSIFADDR, &ifr) < 0)
+        RLOGE("mtkIfaceAddr(%s): SIOCSIFADDR %s: %s", ifname, first, strerror(errno));
+    else
+        RLOGD("mtkIfaceAddr(%s): address %s set", ifname, first);
+
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    sin = (struct sockaddr_in *) &ifr.ifr_netmask;
+    sin->sin_family = AF_INET;
+    inet_pton(AF_INET, "255.255.255.255", &sin->sin_addr);
+    if (ioctl(s, SIOCSIFNETMASK, &ifr) < 0)
+        RLOGE("mtkIfaceAddr(%s): SIOCSIFNETMASK: %s", ifname, strerror(errno));
+
+    if (mtu > 0) {
+        memset(&ifr, 0, sizeof(ifr));
+        strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+        ifr.ifr_mtu = mtu;
+        if (ioctl(s, SIOCSIFMTU, &ifr) < 0)
+            RLOGE("mtkIfaceAddr(%s): SIOCSIFMTU %d: %s", ifname, mtu, strerror(errno));
+    }
+    close(s);
+}
+
+static void mtkIfaceUp(const char *ifname) {
+    struct ifreq ifr;
+    int s;
+
+    if (ifname == NULL || ifname[0] == 0)
+        return;
+    s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) {
+        RLOGE("mtkIfaceUp(%s): socket failed: %s", ifname, strerror(errno));
+        return;
+    }
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, ifname, IFNAMSIZ - 1);
+    if (ioctl(s, SIOCGIFFLAGS, &ifr) < 0) {
+        RLOGE("mtkIfaceUp(%s): SIOCGIFFLAGS failed: %s", ifname, strerror(errno));
+        close(s);
+        return;
+    }
+    if (ifr.ifr_flags & IFF_UP) {
+        RLOGD("mtkIfaceUp(%s): already up", ifname);
+        close(s);
+        return;
+    }
+    ifr.ifr_flags |= (IFF_UP | IFF_RUNNING);
+    if (ioctl(s, SIOCSIFFLAGS, &ifr) < 0)
+        RLOGE("mtkIfaceUp(%s): SIOCSIFFLAGS failed: %s", ifname, strerror(errno));
+    else
+        RLOGD("mtkIfaceUp(%s): brought up", ifname);
+    close(s);
+}
+
 int radio::setupDataCallResponse(int slotId,
 				 int responseType, int serial, RIL_Errno e, void *response,
 				 size_t responseLen) {
@@ -4054,8 +4240,12 @@ int radio::setupDataCallResponse(int slotId,
 	populateResponseInfo(responseInfo, serial, responseType, e);
 
 	SetupDataCallResult result = {};
-	if (response == NULL || responseLen != sizeof(RIL_Data_Call_Response_v11)) {
-	    RLOGE("setupDataCallResponse: Invalid response");
+	/* The vendor returns a longer variant of RIL_Data_Call_Response_v11
+	 * (MTK appends fields). Accept it when at least the v11 prefix is there;
+	 * a shorter answer is still refused. */
+	if (response == NULL || responseLen < sizeof(RIL_Data_Call_Response_v11)) {
+	    RLOGE("setupDataCallResponse: Invalid response: len=%zu, need >=%zu",
+		  responseLen, sizeof(RIL_Data_Call_Response_v11));
 	    if (e == RIL_E_SUCCESS) responseInfo.error = RadioError::INVALID_RESPONSE;
 	    result.status = DataCallFailCause::ERROR_UNSPECIFIED;
 	    result.type = hidl_string();
@@ -4066,6 +4256,33 @@ int radio::setupDataCallResponse(int slotId,
 	    result.pcscf = hidl_string();
 	} else {
 	    convertRilDataCallToHal((RIL_Data_Call_Response_v11 *) response, result);
+
+	    /* The vendor never fills ifname but returns the interface index in
+	     * the cid field (bindPdnToIntf/createDataResponse): cid 0 is ccmni0.
+	     * Then bring the link up and set its address, which nothing else
+	     * does. */
+	    {
+		char mapped[IFNAMSIZ];
+		char path[80];
+		snprintf(mapped, sizeof(mapped), "ccmni%d", result.cid);
+		snprintf(path, sizeof(path), "/sys/class/net/%s", mapped);
+		if (access(path, F_OK) == 0) {
+		    result.ifname = convertCharPtrToHidlString(mapped);
+		    mtkIfaceUp(mapped);
+		    mtkIfaceAddr(mapped, result.addresses.c_str(),
+				   (result.mtu > 0) ? result.mtu : 1500);
+		} else {
+		    RLOGE("setupDataCallResponse: no /sys/class/net/%s for cid %d, "
+			  "leaving vendor ifname [%s] - data will not carry traffic",
+			  mapped, result.cid, result.ifname.c_str());
+		}
+	    }
+	    RLOGI("setupDataCallResponse: len=%zu(v11=%zu) status=%d cid=%d active=%d "
+		  "type=[%s] ifname=[%s] addr=[%s] dns=[%s] gw=[%s] mtu=%d",
+		  responseLen, sizeof(RIL_Data_Call_Response_v11), (int)result.status,
+		  result.cid, result.active, result.type.c_str(), result.ifname.c_str(),
+		  result.addresses.c_str(), result.dnses.c_str(), result.gateways.c_str(),
+		  result.mtu);
 #ifdef MTK_HARDWARE
 	    int i=0;
 	    while ((i<4) && (dataCallCids[i] != -1))
@@ -4084,6 +4301,110 @@ int radio::setupDataCallResponse(int slotId,
     return 0;
 }
 
+
+/* Translate a TS 102 221 FCP template into the 15-byte TS 51.011 GET
+ * RESPONSE layout that IccFileHandler parses. Returns a malloc'd hex string,
+ * or NULL when the input is not an FCP (the answer is then passed through
+ * unchanged). */
+static int mtkHexNibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
+}
+
+static char *mtkFcpToLegacy(const char *hex) {
+    /* Off by default (persist.vendor.ril.fcp=1 enables it): with it on, SIM
+     * record loading has been seen to stall. */
+    {
+	char mtkGate[PROPERTY_VALUE_MAX] = {0};
+	if (property_get("persist.vendor.ril.fcp", mtkGate, NULL) <= 0 ||
+	    atoi(mtkGate) == 0) {
+	    return NULL;
+	}
+    }
+    if (hex == NULL) return NULL;
+    size_t hlen = strlen(hex);
+    if (hlen < 4 || (hlen % 2) != 0 || hlen > 512) return NULL;
+
+    unsigned char buf[256];
+    size_t blen = hlen / 2;
+    for (size_t i = 0; i < blen; i++) {
+	int hi = mtkHexNibble(hex[2 * i]);
+	int lo = mtkHexNibble(hex[2 * i + 1]);
+	if (hi < 0 || lo < 0) return NULL;
+	buf[i] = (unsigned char) ((hi << 4) | lo);
+    }
+    if (buf[0] != 0x62) return NULL;           /* not an FCP template */
+
+    /* FCP body bounds (short form only; UICC file FCPs never need long form) */
+    size_t off = 2, end;
+    if (buf[1] & 0x80) return NULL;
+    end = off + buf[1];
+    if (end > blen) end = blen;
+
+    int haveSize = 0, haveId = 0, haveDesc = 0;
+    unsigned int fileSize = 0, fileId = 0, recLen = 0;
+    int structure = 0;                          /* 0 transparent, 1 linear, 3 cyclic */
+
+    while (off + 2 <= end) {
+	unsigned char tag = buf[off];
+	unsigned char len = buf[off + 1];
+	const unsigned char *val = &buf[off + 2];
+	if (off + 2 + len > end) break;
+	switch (tag) {
+	case 0x80:                              /* File Size */
+	    if (len >= 2) { fileSize = (val[len - 2] << 8) | val[len - 1]; haveSize = 1; }
+	    break;
+	case 0x83:                              /* File Identifier */
+	    if (len == 2) { fileId = (val[0] << 8) | val[1]; haveId = 1; }
+	    break;
+	case 0x82:                              /* File Descriptor */
+	    if (len >= 1) {
+		switch (val[0] & 0x07) {
+		case 0x01: structure = 0; break;
+		case 0x02: structure = 1; break;
+		case 0x06: structure = 3; break;
+		default:   structure = 0; break;
+		}
+		if (len >= 5) recLen = (val[2] << 8) | val[3];
+		haveDesc = 1;
+	    }
+	    break;
+	default:
+	    break;
+	}
+	off += 2 + len;
+    }
+
+    if (!haveSize || !haveId || !haveDesc) {
+	RLOGE("mtkFcpToLegacy: incomplete FCP (size=%d id=%d desc=%d), passing through",
+	      haveSize, haveId, haveDesc);
+	return NULL;
+    }
+
+    unsigned char out[15];
+    memset(out, 0, sizeof(out));
+    out[2]  = (unsigned char) ((fileSize >> 8) & 0xff);
+    out[3]  = (unsigned char) (fileSize & 0xff);
+    out[4]  = (unsigned char) ((fileId >> 8) & 0xff);
+    out[5]  = (unsigned char) (fileId & 0xff);
+    out[6]  = 4;                                /* TYPE_EF */
+    out[11] = 1;                                /* file status: not invalidated */
+    out[12] = 2;                                /* length of the two bytes that follow */
+    out[13] = (unsigned char) structure;
+    out[14] = (unsigned char) (recLen & 0xff);
+
+    char *res = (char *) malloc(sizeof(out) * 2 + 1);
+    if (res == NULL) return NULL;
+    for (size_t i = 0; i < sizeof(out); i++) {
+	snprintf(res + i * 2, 3, "%02X", out[i]);
+    }
+    RLOGD("mtkFcpToLegacy: fid=%04X size=%u struct=%d recLen=%u -> %s",
+	  fileId, fileSize, structure, recLen, res);
+    return res;
+}
+
 IccIoResult responseIccIo(RadioResponseInfo& responseInfo, int serial, int responseType,
 			   RIL_Errno e, void *response, size_t responseLen) {
     populateResponseInfo(responseInfo, serial, responseType, e);
@@ -4097,7 +4418,13 @@ IccIoResult responseIccIo(RadioResponseInfo& responseInfo, int serial, int respo
 	RIL_SIM_IO_Response *resp = (RIL_SIM_IO_Response *) response;
 	result.sw1 = resp->sw1;
 	result.sw2 = resp->sw2;
-	result.simResponse = convertCharPtrToHidlString(resp->simResponse);
+	char *mtkLegacy = mtkFcpToLegacy(resp->simResponse);
+	if (mtkLegacy != NULL) {
+	    result.simResponse = convertCharPtrToHidlString(mtkLegacy);
+	    free(mtkLegacy);
+	} else {
+	    result.simResponse = convertCharPtrToHidlString(resp->simResponse);
+	}
     }
     return result;
 }
@@ -6297,14 +6624,39 @@ int radio::requestShutdownResponse(int slotId,
     return 0;
 }
 
-void responseRadioCapability(RadioResponseInfo& responseInfo, int serial,
+/* The last radio capability the modem reported by indication, per slot.
+ * The vendor's GET_RADIO_CAPABILITY response is unusable, and RILJ then
+ * fakes RAF_UNKNOWN, which keeps setPreferredNetworkType from ever being
+ * sent. The indication carries the same structure intact; it is used when
+ * the response is unusable. Nothing is added to what the modem reported.
+ *
+ * Written by the indication thread, read by the response thread: payload
+ * before flag (release), flag before payload (acquire). */
+static RIL_RadioCapability s_lastRadioCapability[SIM_COUNT];
+static bool s_lastRadioCapabilityValid[SIM_COUNT];
+
+void responseRadioCapability(int slotId, RadioResponseInfo& responseInfo, int serial,
 	int responseType, RIL_Errno e, void *response, size_t responseLen, RadioCapability& rc) {
     populateResponseInfo(responseInfo, serial, responseType, e);
 
-    if (response == NULL || responseLen != sizeof(RIL_RadioCapability)) {
-	RLOGE("responseRadioCapability: Invalid response");
-	if (e == RIL_E_SUCCESS) responseInfo.error = RadioError::INVALID_RESPONSE;
-	rc.logicalModemUuid = hidl_string();
+    /* MTK appends fields: accept a longer structure; a shorter one is still
+     * refused, and the refusal logs what arrived. */
+    if (response == NULL || responseLen < sizeof(RIL_RadioCapability)) {
+	RLOGE("responseRadioCapability: unusable response: null=%d len=%zu need>=%zu e=%d",
+	      (response == NULL) ? 1 : 0, responseLen, sizeof(RIL_RadioCapability), (int) e);
+	if (slotId >= 0 && slotId < SIM_COUNT
+	    && __atomic_load_n(&s_lastRadioCapabilityValid[slotId], __ATOMIC_ACQUIRE)) {
+	    convertRilRadioCapabilityToHal(&s_lastRadioCapability[slotId],
+		sizeof(RIL_RadioCapability), rc);
+	    responseInfo.error = RadioError::NONE;
+	    RLOGI("responseRadioCapability: slot %d, substituting the last indicated "
+		  "capability: raf=%d session=%d phase=%d status=%d uuid=[%s]",
+		  slotId, (int) rc.raf, rc.session, (int) rc.phase, (int) rc.status,
+		  rc.logicalModemUuid.c_str());
+	} else {
+	    if (e == RIL_E_SUCCESS) responseInfo.error = RadioError::INVALID_RESPONSE;
+	    rc.logicalModemUuid = hidl_string();
+	}
     } else {
 	convertRilRadioCapabilityToHal(response, responseLen, rc);
     }
@@ -6320,8 +6672,8 @@ int radio::getRadioCapabilityResponse(int slotId,
     if (radioService[slotId]->mRadioResponse != NULL) {
 	RadioResponseInfo responseInfo = {};
 	RadioCapability result = {};
-	responseRadioCapability(responseInfo, serial, responseType, e, response, responseLen,
-		result);
+	responseRadioCapability(slotId, responseInfo, serial, responseType, e, response,
+		responseLen, result);
 	Return<void> retStatus = radioService[slotId]->mRadioResponse->getRadioCapabilityResponse(
 		responseInfo, result);
 	radioService[slotId]->checkReturnStatus(retStatus);
@@ -6342,8 +6694,8 @@ int radio::setRadioCapabilityResponse(int slotId,
     if (radioService[slotId]->mRadioResponse != NULL) {
 	RadioResponseInfo responseInfo = {};
 	RadioCapability result = {};
-	responseRadioCapability(responseInfo, serial, responseType, e, response, responseLen,
-		result);
+	responseRadioCapability(slotId, responseInfo, serial, responseType, e, response,
+		responseLen, result);
 	Return<void> retStatus = radioService[slotId]->mRadioResponse->setRadioCapabilityResponse(
 		responseInfo, result);
 	radioService[slotId]->checkReturnStatus(retStatus);
@@ -7052,7 +7404,29 @@ void convertRilDataCallToHal(RIL_Data_Call_Response_v11 *dcResponse,
     dcResult.cid = dcResponse->cid;
     dcResult.active = dcResponse->active;
     dcResult.type = convertCharPtrToHidlString(dcResponse->type);
-    dcResult.ifname = convertCharPtrToHidlString(dcResponse->ifname);
+
+    /* The vendor RIL names the MD1 data interfaces "ccemni%d", while the
+     * kernel registers "ccmni%d". Map the prefix onto the interface that
+     * exists, and only when it exists. */
+    {
+	const char *vif = dcResponse->ifname;
+	if (vif != NULL && strncmp(vif, "ccemni", 6) == 0) {
+	    char mapped[IFNAMSIZ];
+	    char path[64];
+	    snprintf(mapped, sizeof(mapped), "ccmni%s", vif + 6);
+	    snprintf(path, sizeof(path), "/sys/class/net/%s", mapped);
+	    if (access(path, F_OK) == 0) {
+		RLOGD("convertRilDataCallToHal: ifname [%s] -> [%s]", vif, mapped);
+		dcResult.ifname = convertCharPtrToHidlString(mapped);
+	    } else {
+		RLOGE("convertRilDataCallToHal: [%s] has no [%s], passing through",
+		      vif, mapped);
+		dcResult.ifname = convertCharPtrToHidlString(dcResponse->ifname);
+	    }
+	} else {
+	    dcResult.ifname = convertCharPtrToHidlString(dcResponse->ifname);
+	}
+    }
     dcResult.addresses = convertCharPtrToHidlString(dcResponse->addresses);
     dcResult.dnses = convertCharPtrToHidlString(dcResponse->dnses);
     dcResult.gateways = convertCharPtrToHidlString(dcResponse->gateways);
@@ -7075,8 +7449,14 @@ int radio::dataCallListChangedInd(int slotId,
 				  int indicationType, int token, RIL_Errno e, void *response,
 				  size_t responseLen) {
     if (radioService[slotId] != NULL && radioService[slotId]->mRadioIndication != NULL) {
-	if (response == NULL || responseLen % sizeof(RIL_Data_Call_Response_v11) != 0) {
-	    RLOGE("dataCallListChangedInd: invalid response");
+	/* An empty list is a valid indication ("no data calls any more") and
+	 * arrives as response == NULL, responseLen == 0. Rejecting it left the
+	 * framework on a dead connection. Non-empty lists keep the size check
+	 * and log the length they got. */
+	if ((response == NULL && responseLen != 0)
+		|| responseLen % sizeof(RIL_Data_Call_Response_v11) != 0) {
+	    RLOGE("dataCallListChangedInd: invalid response: len=%zu, entry=%zu",
+		  responseLen, sizeof(RIL_Data_Call_Response_v11));
 	    return 0;
 	}
 	hidl_vec<SetupDataCallResult> dcList;
@@ -7816,16 +8196,10 @@ void convertRilCellInfoListToHal(void *response, size_t responseLen, hidl_vec<Ce
     RLOGD("convertRilCellInfoListToHal: responseLen=%d, num=%d", (int)responseLen, num);
 #endif
 
-#ifdef MTK_HARDWARE
-    // response is an array of RIL_CellInfo*
-    RIL_CellInfo **rilCellInfohd = (RIL_CellInfo **) response;
-#else
+    /* mtk-ril.so returns the cell info as inline RIL_CellInfo_v12 records
+     * (count * 72 bytes), not as an array of pointers. */
     RIL_CellInfo_v12 *rilCellInfo = (RIL_CellInfo_v12 *) response;
-#endif
     for (int i = 0; i < num; i++) {
-#ifdef MTK_HARDWARE
-	RIL_CellInfo *rilCellInfo = rilCellInfohd[i];
-#endif
 	records[i].cellInfoType = (CellInfoType) rilCellInfo->cellInfoType;
 #if VDBG
     RLOGD("rilCellInfo->cellInfoType=%d records[%d].cellInfoType=%d",
@@ -7971,9 +8345,7 @@ void convertRilCellInfoListToHal(void *response, size_t responseLen, hidl_vec<Ce
 		break;
 	    }
 	}
-#ifndef MTK_HARDWARE
 	rilCellInfo += 1;
-#endif
     }
 }
 
@@ -8144,6 +8516,13 @@ int radio::radioCapabilityIndicationInd(int slotId,
 
 	RadioCapability rc = {};
 	convertRilRadioCapabilityToHal(response, responseLen, rc);
+
+	/* Remember it for responseRadioCapability(). Payload first, then the
+	 * flag. */
+	if (slotId >= 0 && slotId < SIM_COUNT) {
+	    memcpy(&s_lastRadioCapability[slotId], response, sizeof(RIL_RadioCapability));
+	    __atomic_store_n(&s_lastRadioCapabilityValid[slotId], true, __ATOMIC_RELEASE);
+	}
 
 #if VDBG
 	RLOGD("radioCapabilityIndicationInd");
@@ -8495,6 +8874,10 @@ int radio::registrationSuspendInd(int slotId,
 #if VDBG
 	RLOGD("registrationSuspendInd");
 #endif
+	if (response == NULL || responselen < sizeof(int)) {
+	    RLOGE("registrationSuspendInd: invalid response");
+	    return 0;
+	}
 	int *p_int = (int *) response;
 	int value = p_int[0];
 	dispatchInts(-1, slotId, RIL_REQUEST_RESUME_REGISTRATION, 1, value);
@@ -8515,6 +8898,35 @@ int radio::incomingCallInd(int slotId,
 #endif
 	char **strings = (char **) response;
 	int p0,p1,p2;
+
+	/* The vendor also sends RIL_UNSOL_INCOMING_CALL_INDICATION (3042) for a
+	 * VoLTE capability notification: 16 bytes, two int32 ({vops, 99} or
+	 * {99, emb}), no strings. Tell the two apart by the payload size before
+	 * reading it as the call-indication string array. */
+	if (response == NULL) {
+		RLOGE("incomingCallInd: NULL response, slot %d", slotId);
+		return 0;
+	}
+	if (responseLen == 2 * sizeof(int)) {
+		int *v = (int *) response;
+		if (v[1] == 99)
+			RLOGD("incomingCallInd: VoLTE VoPS support = %d (vendor reuse of 3042)", v[0]);
+		else if (v[0] == 99)
+			RLOGD("incomingCallInd: VoLTE EMB support = %d (vendor reuse of 3042)", v[1]);
+		else
+			RLOGD("incomingCallInd: 2-int payload {%d,%d}, no sentinel", v[0], v[1]);
+		return 0;
+	}
+	if (responseLen < 5 * sizeof(char *)) {
+		RLOGE("incomingCallInd: payload too short for a call indication: %zu B, slot %d",
+		      responseLen, slotId);
+		return 0;
+	}
+	if (strings[0] == NULL || strings[3] == NULL || strings[4] == NULL) {
+		RLOGE("incomingCallInd: NULL string in call indication, slot %d", slotId);
+		return 0;
+	}
+
 	p0 = atoi(strings[3]);
 	p1 = atoi(strings[0]);
 	p2 = atoi(strings[4]);
@@ -8531,6 +8943,45 @@ int radio::incomingCallInd(int slotId,
 }
 
 // RIL_UNSOL_CALL_INFO_INDICATION
+/* Unsol 3043: the +ECPI call-state stream. The header calls 3043
+ * RIL_UNSOL_CIPHER_INDICATION and no handler read it. Check the payload
+ * before trusting it (the id is shared).
+ *
+ * On the message that carries the caller's number the modem waits for
+ * SET_CALL_INDICATION with the same call id (field 0) and sequence number
+ * (last field); without it the call does not proceed. The "mode" argument
+ * comes from persist.vendor.ril.callind_mode (default 1). */
+int radio::mtkEcpiInd(int slotId,
+                        int indicationType, int token, RIL_Errno e, void *response,
+                        size_t responseLen) {
+    if (response == NULL) return 0;
+
+    /* responseLen is a count of pointers in some of these MTK unsols and a byte
+     * length in others; accept both rather than pick one. */
+    size_t nfields = (responseLen >= sizeof(char *)
+                      && (responseLen % sizeof(char *)) == 0)
+                     ? responseLen / sizeof(char *)
+                     : responseLen;
+    if (nfields < 10 || nfields > 32) return 0;
+
+    char **strings = (char **) response;
+    if (strings[0] == NULL || strings[1] == NULL) return 0;
+    if (strcmp(strings[1], "133") != 0) return 0;      /* incoming, with number */
+
+    char modeProp[PROPERTY_VALUE_MAX] = {0};
+    int mode = 1;
+    if (property_get("persist.vendor.ril.callind_mode", modeProp, NULL) > 0) {
+        mode = atoi(modeProp);
+    }
+    int callId = atoi(strings[0]);
+    int seq = (strings[nfields - 1] != NULL) ? atoi(strings[nfields - 1]) : 0;
+
+    RLOGI("ECPI: incoming call id=%d seq=%d fields=%zu -> SET_CALL_INDICATION mode=%d",
+          callId, seq, nfields, mode);
+    dispatchInts(-1, slotId, RIL_REQUEST_SET_CALL_INDICATION, 3, mode, callId, seq);
+    return 0;
+}
+
 int radio::callInfoInd(int slotId,
 		       int indicationType, int token, RIL_Errno e, void *response,
 		       size_t responseLen) {
@@ -8539,6 +8990,33 @@ int radio::callInfoInd(int slotId,
 	RLOGD("callInfoInd");
 #endif
 	char **strings = (char **) response;
+	/* responseLen is a count of string pointers in this function, not a
+	 * byte length; accept both. */
+	size_t nfields = (responseLen >= sizeof(char *)
+	                  && (responseLen % sizeof(char *)) == 0)
+	                 ? responseLen / sizeof(char *)
+	                 : responseLen;
+
+	/* Acknowledge the incoming call with SET_CALL_INDICATION (call id and
+	 * sequence number from the message), or the modem does not proceed.
+	 * The "mode" argument comes from persist.vendor.ril.callind_mode. */
+	if (nfields >= 2 && strings[0] != NULL && strings[1] != NULL
+	        && strcmp(strings[1], "133") == 0) {
+	    char modeProp[PROPERTY_VALUE_MAX] = {0};
+	    int mode = 1;
+	    if (property_get("persist.vendor.ril.callind_mode", modeProp, NULL) > 0) {
+	        mode = atoi(modeProp);
+	    }
+	    int callId = atoi(strings[0]);
+	    int seq = 0;
+	    if (nfields >= 10 && nfields <= 32 && strings[nfields - 1] != NULL) {
+	        seq = atoi(strings[nfields - 1]);
+	    }
+	    RLOGI("callInfoInd: incoming call id=%d seq=%d, sending "
+	          "SET_CALL_INDICATION mode=%d (%zu fields)", callId, seq, mode, nfields);
+	    dispatchInts(-1, slotId, RIL_REQUEST_SET_CALL_INDICATION, 3, mode, callId, seq);
+	}
+
 	if ((responseLen >= 2) && (strcmp(strings[1], "129") == 0)) {
 	    Return<void> retStatus = radioService[slotId]->mRadioIndication->callStateChanged(
 			convertIntToRadioIndicationType(indicationType));
@@ -8559,6 +9037,10 @@ int radio::psNetworkStateChangedInd(int slotId,
 #if VDBG
 	RLOGD("psNetworkStateChangedInd");
 #endif
+	if (response == NULL || responseLen < sizeof(int)) {
+	    RLOGE("psNetworkStateChangedInd: invalid response");
+	    return 0;
+	}
 	int *p_int = (int *) response;
 	if (p_int[0] == 4) {
 	    Return<void> retStatus = radioService[slotId]->mRadioIndication->networkStateChanged(
@@ -8581,7 +9063,7 @@ int radio::setAttachApnInd(int slotId,
 #if VDBG
 	RLOGD("setAttachApnInd");
 #endif
-	RIL_InitialAttachApn iaa = {NULL, NULL, 0, NULL, NULL, NULL, 0, NULL};
+	RIL_InitialAttachApn iaa = {};
 	RequestInfo *pRI = android::addRequestToList(-1, slotId,
 				RIL_REQUEST_SET_INITIAL_ATTACH_APN);
 	if (pRI == NULL) {
@@ -8589,14 +9071,22 @@ int radio::setAttachApnInd(int slotId,
 	}
 	iaa.apn = (char *) calloc(1, sizeof(char));
 	iaa.protocol = (char *) calloc(1, sizeof(char));
+#ifndef MTK_RIL_IAA_NO_ROAMING_PROTOCOL
+	iaa.roamingProtocol = (char *) calloc(1, sizeof(char));
+#endif
 	iaa.username = (char *) calloc(1, sizeof(char));
 	iaa.password = (char *) calloc(1, sizeof(char));
 	iaa.operatorNumeric = (char *) calloc(1, sizeof(char));
 
 	android::my_enqueue(RIL_REQUEST_SET_INITIAL_ATTACH_APN, &iaa,
 				sizeof(iaa) - sizeof(char**), android::FMT_IGNORE, pRI);
-	memsetAndFreeStrings(5, iaa.apn, iaa.protocol, iaa.username,
-				iaa.password, iaa.operatorNumeric);
+#ifdef MTK_RIL_IAA_NO_ROAMING_PROTOCOL
+	memsetAndFreeStrings(5, iaa.apn, iaa.protocol,
+				iaa.username, iaa.password, iaa.operatorNumeric);
+#else
+	memsetAndFreeStrings(6, iaa.apn, iaa.protocol, iaa.roamingProtocol,
+				iaa.username, iaa.password, iaa.operatorNumeric);
+#endif
     } else {
 	RLOGE("setAttachApnInd: radioService[%d]->mRadioIndication == NULL", slotId);
     }

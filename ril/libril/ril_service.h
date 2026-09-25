@@ -756,6 +756,9 @@ int incomingCallInd(int slotId, int indType, int token,
 		    RIL_Errno e, void *response, size_t responselen);
 
 // RIL_UNSOL_CALL_INFO_INDICATION
+int mtkEcpiInd(int slotId, int indicationType, int token,
+                RIL_Errno e, void *response, size_t responseLen);
+
 int callInfoInd(int slotId, int indType, int token,
 		RIL_Errno e, void *response, size_t responselen);
 

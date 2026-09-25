@@ -74,7 +74,10 @@ typedef struct CommandInfo CommandInfo;
 extern "C" const char * requestToString(int request);
 
 typedef struct RequestInfo {
-//    RIL_Client_Type *client;	// MTK, why must be in beginning? ***seem for external SIM,volte ???
+    /* Must stay first: the vendor RIL reads offset 0 of a token as a
+     * pointer (isRequestTokFromMAL_EpdgHo) and treats NULL as "not a MAL
+     * token". addRequestToList() uses calloc(), so it stays NULL. */
+    void *client;
     int32_t token;	//this is not RIL_Token
     CommandInfo *pCI;
     struct RequestInfo *p_next;
@@ -93,6 +96,12 @@ typedef struct CommandInfo {
 } CommandInfo;
 
 RequestInfo * addRequestToList(int serial, int slotId, int request);
+
+#ifdef MTK_HARDWARE
+/* Vendor onRequest under the request's channel mutex (see ril.cpp). */
+void mtkOnRequestLocked(int request, void *data, size_t datalen,
+        RIL_Token t, RIL_SOCKET_ID socketId);
+#endif
 
 char * RIL_getServiceName();
 
@@ -118,6 +127,9 @@ typedef enum {
 } BUF_FMTS;
 
 void my_enqueue(int request, void *buf, size_t buflen, BUF_FMTS bf, RequestInfo *pRI);
+
+/* MTK DEVICE_IDENTITY emulation gate. See mtkDevIdEmuEnabled() in ril.cpp. */
+bool mtkDevIdEmuEnabled();
 
 }   // namespace android
 
