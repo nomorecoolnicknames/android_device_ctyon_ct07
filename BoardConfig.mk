@@ -32,7 +32,7 @@ BOARD_KERNEL_IMAGE_NAME := zImage-dtb
 TARGET_KERNEL_ARCH := arm
 
 # Kernel: zImage with the appended CT07 DTB, built from
-# https://github.com/nomorecoolnicknames/android_kernel_ctyon_ct07
+# https://github.com/nomorecoolnicknames/android_kernel_ctyon_ct07, ct07_n_defconfig
 TARGET_PREBUILT_KERNEL ?= $(DEVICE_PATH)/prebuilt/kernel
 
 # Vendor modules install into /system, as on the stock firmware.

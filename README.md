@@ -10,7 +10,7 @@ Memory  | 512 MB
 Screen  | 240x320
 Storage | 4 GB
 Android | 6.0
-Kernel  | 3.18.19
+Kernel  | 3.18.140
 Input   | Hardware keypad (no touchscreen)
 
 # Build instructions
@@ -27,7 +27,8 @@ lunch cm_ct07-userdebug && mka bacon
 ```
 
 The kernel in prebuilt/kernel is built from
-https://github.com/nomorecoolnicknames/android_kernel_ctyon_ct07 (android-3.18).
+https://github.com/nomorecoolnicknames/android_kernel_ctyon_ct07 (android-3.18,
+ct07_n_defconfig).
 
 # Acknowledgements
 
