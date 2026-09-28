@@ -1,6 +1,13 @@
 # LineageOS 16.0 (Android 9 Go, 512 MB profile) for the Ctyon CT07.
 
 $(call inherit-product, $(SRC_TARGET_DIR)/product/full_base_telephony.mk)
+
+# lmkd at medium pressure kills from oom_adj 800 (the lmkd default) instead
+# of 700 (go_defaults_512): the previous app (700) is spared, cached (900+)
+# and B services (800) go first anyway. Before the inherit: first one wins.
+PRODUCT_PROPERTY_OVERRIDES += \
+    ro.lmk.medium=800
+
 $(call inherit-product, $(SRC_TARGET_DIR)/product/go_defaults_512.mk)
 $(call inherit-product, vendor/lineage/config/common_mini_phone.mk)
 $(call inherit-product, device/bird/ct07/device.mk)
