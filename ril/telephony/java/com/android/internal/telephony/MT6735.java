@@ -30,6 +30,7 @@ import android.os.SystemProperties;
 import android.provider.Settings;
 import android.provider.Settings.Global;
 
+import android.telephony.RadioAccessFamily;
 import android.telephony.Rlog;
 import android.telephony.TelephonyManager;
 
@@ -310,6 +311,33 @@ public class MT6735 extends RIL implements CommandsInterface {
             }
         }
         super.deactivateDataCall(cid, reason, result);
+    }
+
+    /*
+     * Answered here with what mtk-ril.so reports: GSM, UMTS and LTE on the
+     * slot in persist.radio.simswitch (1-based), GSM on the other one. When
+     * RIL_REQUEST_GET_RADIO_CAPABILITY fails, Phone keeps RAF_UNKNOWN and
+     * never sends the preferred network type, so the modem stays on 3G.
+     */
+    @Override
+    public void
+    getRadioCapability(Message response) {
+        int phoneId = (mInstanceId == null) ? 0 : mInstanceId.intValue();
+        int major = SystemProperties.getInt("persist.radio.simswitch", 1) - 1;
+        int raf = (phoneId == major)
+                ? (RadioAccessFamily.RAF_GSM | RadioAccessFamily.RAF_UMTS
+                        | RadioAccessFamily.RAF_LTE)
+                : RadioAccessFamily.RAF_GSM;
+        RadioCapability rc = new RadioCapability(phoneId, 0, 0, raf, "",
+                RadioCapability.RC_STATUS_SUCCESS);
+
+        if (RILJ_LOGD) riljLog("getRadioCapability: phone " + phoneId + " raf " + raf
+                + " (simswitch slot " + (major + 1) + ")");
+
+        if (response != null) {
+            AsyncResult.forMessage(response, rc, null);
+            response.sendToTarget();
+        }
     }
 
     @Override
