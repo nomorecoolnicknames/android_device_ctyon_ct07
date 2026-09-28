@@ -27,3 +27,6 @@ ro.opengles.version=196608
 # spaces)
 rild.libpath=mtk-ril.so
 rild.libargs=-d /dev/ttyC0
+
+# Cached and empty background processes (ProcessList, default 32).
+ro.sys.fw.bg_apps_limit=12
