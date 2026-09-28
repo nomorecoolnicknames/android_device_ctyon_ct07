@@ -783,8 +783,10 @@ on property:debug.MB.prdebug=1
 on property:debug.MB.prdebug=0
     write /sys/kernel/debug/dynamic_debug/control "file *mediatek* -p"
 
+# MediaTek MET profiler log daemon; nothing on the CT07 collects MET traces.
 service met_log_d /system/bin/met_log_d
     class main
+    disabled
 
 service ged_srv /system/bin/ged_srv
     class core
@@ -911,8 +913,10 @@ service ipod /system/bin/ipod
     group root
     disabled
 
+# Logger for an external (C2K) modem the CT07 does not run.
 service extmdlogger /system/bin/extmdlogger
     class main
+    disabled
     user shell
     group shell system radio sdcard_rw inet sdcard_r media_rw
 
@@ -958,8 +962,10 @@ service emdlogger6 /system/bin/emdlogger6
     disabled
     oneshot
 
+# Modem log monitor for MTKLogger, which is not in the image.
 service md_monitor /system/bin/md_monitor
     class main
+    disabled
     user system
     group system radio sdcard_rw inet sdcard_r media_rw
 
@@ -1143,8 +1149,10 @@ service batterywarning /system/bin/batterywarning
     user shell
     group shell
 
+# Back end of the MediaTek backup app, which is not in the image.
 service backuprestore /system/bin/br_app_data_service
 	class main
+	disabled
 	socket backuprestore stream 0660 root sdcard_rw
 	user root
 
