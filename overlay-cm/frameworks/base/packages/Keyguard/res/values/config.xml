@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  vendor/cm/overlay/common turns MENU on the lock screen off. Without a
+  touchscreen MENU is the only key that leaves the clock for the PIN or
+  password entry (or dismisses a swipe lock).
+-->
+<resources>
+    <bool name="config_disableMenuKeyInLockScreen">false</bool>
+</resources>

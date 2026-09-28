@@ -56,6 +56,9 @@ WITH_DEXPREOPT := true
 WITH_DEXPREOPT_PIC := true
 
 DEVICE_PACKAGE_OVERLAYS += $(LOCAL_PATH)/overlay
+# overlay-cm overrides vendor/cm/overlay/common, which comes before
+# overlay/ in DEVICE_PACKAGE_OVERLAYS; product overlays come first.
+PRODUCT_PACKAGE_OVERLAYS += $(LOCAL_PATH)/overlay-cm
 
 # Keypad
 PRODUCT_COPY_FILES += \
