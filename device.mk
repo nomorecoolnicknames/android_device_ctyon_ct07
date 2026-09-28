@@ -180,6 +180,6 @@ PRODUCT_PROPERTY_OVERRIDES += \
     ro.hardware.egl=mali
 
 # Android Go process limits: max_starting_bg stays at the low-RAM default
-# (1, ActiveServices); at most 12 cached and empty processes.
+# (1, ActiveServices); at most 16 cached and empty processes.
 PRODUCT_PROPERTY_OVERRIDES += \
-    ro.vendor.qti.sys.fw.bg_apps_limit=12
+    ro.vendor.qti.sys.fw.bg_apps_limit=16
