@@ -73,6 +73,10 @@ SELINUX_IGNORE_NEVERALLOWS := true
 # always running (lineage_ct07.mk).
 WITH_DEXPREOPT_BOOT_IMG_AND_SYSTEM_SERVER_ONLY := false
 
+# jemalloc low-memory configuration (Android Go): one arena, no thread cache
+# (external/jemalloc/Android.bp).
+MALLOC_SVELTE := true
+
 # Resident services with no user on this phone: the conditional-access HAL
 # (no tuner) and the userdebug profiling daemon. Filtered here because
 # main.mk reads the product package lists after the board config.
