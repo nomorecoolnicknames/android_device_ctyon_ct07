@@ -30,3 +30,10 @@ PRODUCT_PROPERTY_OVERRIDES += \
     dalvik.vm.heapstartsize=5m \
     dalvik.vm.heapminfree=512k \
     dalvik.vm.heapmaxfree=2m
+
+# Compiled in full: the status bar, the launcher and the input method run all
+# the time. The other apps get the quicken filter.
+PRODUCT_DEXPREOPT_SPEED_APPS += \
+    SystemUI \
+    MonoLaunch \
+    TraditionalT9

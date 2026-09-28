@@ -66,6 +66,13 @@ TARGET_SYSTEM_PROP := $(DEVICE_PATH)/system.prop
 # SELinux: the M-era MTK rules violate Pie neverallows; runtime is permissive.
 SELINUX_IGNORE_NEVERALLOWS := true
 
+# Preopt the apps too: a userdebug build otherwise compiles only the boot
+# image and system_server (build/make/core/dex_preopt.mk), and the apps run
+# unverified from the APK or with the "verify" filter until the phone sits
+# idle on a charger. Default filter quicken; speed for the apps that are
+# always running (lineage_ct07.mk).
+WITH_DEXPREOPT_BOOT_IMG_AND_SYSTEM_SERVER_ONLY := false
+
 # Wi-Fi: MT6735 CONSYS, driver state and mode through /dev/wmtWifi. AP mode
 # brings up ap0 (ro.vendor.wifi.sap.interface).
 BOARD_WLAN_DEVICE := MediaTek
