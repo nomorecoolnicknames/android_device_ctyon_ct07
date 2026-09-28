@@ -73,6 +73,14 @@ SELINUX_IGNORE_NEVERALLOWS := true
 # always running (lineage_ct07.mk).
 WITH_DEXPREOPT_BOOT_IMG_AND_SYSTEM_SERVER_ONLY := false
 
+# Resident services with no user on this phone: the conditional-access HAL
+# (no tuner) and the userdebug profiling daemon. Filtered here because
+# main.mk reads the product package lists after the board config.
+PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_PACKAGES := \
+    $(filter-out android.hardware.cas@1.0-service,$(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_PACKAGES))
+PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_PACKAGES_DEBUG := \
+    $(filter-out perfprofd,$(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_PACKAGES_DEBUG))
+
 # Wi-Fi: MT6735 CONSYS, driver state and mode through /dev/wmtWifi. AP mode
 # brings up ap0 (ro.vendor.wifi.sap.interface).
 BOARD_WLAN_DEVICE := MediaTek
