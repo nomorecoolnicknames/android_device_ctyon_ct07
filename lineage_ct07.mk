@@ -23,9 +23,10 @@ PRODUCT_FULL_TREBLE_OVERRIDE := false
 PRODUCT_GMS_CLIENTID_BASE := android-ctyon
 
 # Dalvik heap: go_defaults_512 sets 128m/256m; the rest follows the
-# phone-hdpi-512 profile. Set here, in the top product makefile, to win.
+# phone-hdpi-512 profile, except the target utilization, which stays at the
+# ART default (0.5) as on Android Go. Set here, in the top product makefile,
+# to win.
 PRODUCT_PROPERTY_OVERRIDES += \
     dalvik.vm.heapstartsize=5m \
-    dalvik.vm.heaptargetutilization=0.75 \
     dalvik.vm.heapminfree=512k \
     dalvik.vm.heapmaxfree=2m
