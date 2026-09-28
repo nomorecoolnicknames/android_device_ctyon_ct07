@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 22:25:59 +0300
+Subject: [PATCH] Keyguard: open the bouncer with OK from a hardware keypad
+
+On a keypad phone without a touchscreen the lock screen shows the clock
+and nothing reacts to OK; the bouncer can only be reached with MENU.
+OK (DPAD_CENTER) that no view on the lock screen handled now does what
+MENU does: it shows the bouncer, or dismisses an insecure keyguard.
+
+Like MENU it depends on config_disableMenuKeyInLockScreen, and it acts
+only in the KEYGUARD state, so the notification shade and the bouncer
+itself keep their own OK handling.
+---
+ .../systemui/statusbar/phone/StatusBarWindowView.java     | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarWindowView.java b/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarWindowView.java
+index 5ebe691808d..d0444e807af 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarWindowView.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarWindowView.java
+@@ -261,6 +261,14 @@ public class StatusBarWindowView extends FrameLayout implements TunerService.Tun
+                     return mService.onSpacePressed();
+                 }
+                 break;
++            case KeyEvent.KEYCODE_DPAD_CENTER:
++                // Without a touchscreen OK on the lock screen opens the bouncer, as MENU does.
++                if (!down && mService.getBarState() == StatusBarState.KEYGUARD
++                        && getResources().getConfiguration().touchscreen
++                                == Configuration.TOUCHSCREEN_NOTOUCH) {
++                    return mService.onMenuPressed();
++                }
++                break;
+             case KeyEvent.KEYCODE_VOLUME_DOWN:
+             case KeyEvent.KEYCODE_VOLUME_UP:
+                 if (mService.isDozing()) {
+-- 
+2.39.5
+
