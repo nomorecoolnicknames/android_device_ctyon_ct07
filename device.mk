@@ -177,5 +177,9 @@ PRODUCT_PACKAGES += libcurl
 PRODUCT_PROPERTY_OVERRIDES += \
     ro.sf.lcd_density=120 \
     ro.opengles.version=196608 \
-    ro.hardware.egl=mali \
-    ro.config.max_starting_bg=4
+    ro.hardware.egl=mali
+
+# Android Go process limits: max_starting_bg stays at the low-RAM default
+# (1, ActiveServices); at most 12 cached and empty processes.
+PRODUCT_PROPERTY_OVERRIDES += \
+    ro.vendor.qti.sys.fw.bg_apps_limit=12
