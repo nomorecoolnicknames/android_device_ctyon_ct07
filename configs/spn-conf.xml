@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Service provider names that replace EF_SPN of the SIM (SpnOverride,
+  read when the carrier config is loaded). The T-Mobile Russia SIM
+  (250 62, formerly Tinkoff Mobile) seen on this phone carries "Verizon"
+  in EF_SPN; the network itself names it T-Mobile.
+-->
+<spnOverrides>
+    <spnOverride numeric="25062" spn="T-Mobile"/>
+</spnOverrides>

@@ -149,3 +149,7 @@ PRODUCT_PROPERTY_OVERRIDES += \
     ro.telephony.default_network=0,0 \
     ro.com.android.dataroaming=false \
     ro.logd.size.radio=256K
+
+# Operator name for SIMs with a wrong EF_SPN
+PRODUCT_COPY_FILES += \
+    $(LOCAL_PATH)/configs/spn-conf.xml:system/etc/spn-conf.xml
