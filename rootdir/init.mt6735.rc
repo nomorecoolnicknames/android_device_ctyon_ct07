@@ -792,6 +792,7 @@ service bootlogoupdater /system/bin/boot_logo_updater
 
 service mobile_log_d /system/bin/mobile_log_d
     class main
+    disabled
 # MTK PR_DEBUG SWITCH
 on property:debug.MB.prdebug=1
     write /sys/kernel/debug/dynamic_debug/control "file *mediatek* +p"
@@ -828,6 +829,7 @@ service gas_srv /system/bin/gas_srv
 
 service netdiag /system/bin/netdiag
     class main
+    disabled
 
 
 service nvram_daemon /system/bin/nvram_daemon
