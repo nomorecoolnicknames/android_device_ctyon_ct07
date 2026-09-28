@@ -61,6 +61,9 @@ TARGET_SCREEN_HEIGHT := 320
 # TWRP for this board reports bd6737t_35g_a_m0.
 TARGET_OTA_ASSERT_DEVICE := ct07,bd6737t_35g_a_m0
 
+# releasetools.py: the OTA wipes /data/dalvik-cache.
+TARGET_RELEASETOOLS_EXTENSIONS := $(DEVICE_PATH)
+
 TARGET_SYSTEM_PROP := $(DEVICE_PATH)/system.prop
 
 # SELinux: the M-era MTK rules violate Pie neverallows; runtime is permissive.
