@@ -127,6 +127,8 @@ PRODUCT_PACKAGES += \
 # Telephony: stock mtk-ril.so with the MT6735 RIL class (ril/), dual SIM.
 # Default network mode GSM/WCDMA: without IMS the modem does not register
 # for CS services on LTE, so calls need 3G/2G. LTE stays selectable.
+# Data roaming starts off: without ro.com.android.dataroaming the per-SIM
+# default (data_roaming<N>) is on.
 PRODUCT_PROPERTY_OVERRIDES += \
     ro.telephony.ril_class=MT6735 \
     persist.radio.multisim.config=dsds \
@@ -145,4 +147,5 @@ PRODUCT_PROPERTY_OVERRIDES += \
     ril.external.md=0 \
     ril.telephony.mode=0 \
     ro.telephony.default_network=0,0 \
+    ro.com.android.dataroaming=false \
     ro.logd.size.radio=256K
