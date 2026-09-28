@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nomorecoolnicknames <nomorecoolnicknames@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 00:55:20 +0300
+Subject: [PATCH] SystemUI: keyguard: open the bouncer from a hardware keypad
+
+On a keypad phone without a touchscreen the lock screen clock had no
+reliable way into the bouncer:
+
+- MENU only collapses the notification panel; the bouncer follows only
+  when that collapse runs to its end, and often it did not appear;
+- a focused notification on the clock takes OK (it activates the
+  notification), so OK could not open the bouncer either;
+- the arrow keys move the focus onto the notifications, where the
+  digits of a PIN are lost and OK again activates a notification.
+
+A password could not be entered at all, and a PIN only when typed
+without arrows. Without a touchscreen MENU and OK now open the bouncer
+(or dismiss an insecure keyguard, as MENU does), and the arrows open a
+secure bouncer, before any child view sees the key. While the bouncer
+shows, the arrows can no longer move the focus out of it to the
+notifications behind it.
+---
+ .../statusbar/phone/StatusBarWindowView.java  | 77 +++++++++++++++++++
+ 1 file changed, 77 insertions(+)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarWindowView.java b/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarWindowView.java
+index b8f3ab17c..bae343040 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarWindowView.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/phone/StatusBarWindowView.java
+@@ -39,6 +39,7 @@ import android.os.SystemClock;
+ import android.util.AttributeSet;
+ import android.view.ActionMode;
+ import android.view.DisplayCutout;
++import android.view.FocusFinder;
+ import android.view.GestureDetector;
+ import android.view.InputDevice;
+ import android.view.InputQueue;
+@@ -283,6 +284,9 @@ public class StatusBarWindowView extends FrameLayout implements TunerService.Tun
+         if (mService.interceptMediaKey(event)) {
+             return true;
+         }
++        if (interceptLockScreenKey(event)) {
++            return true;
++        }
+         if (super.dispatchKeyEvent(event)) {
+             return true;
+         }
+@@ -314,6 +318,79 @@ public class StatusBarWindowView extends FrameLayout implements TunerService.Tun
+         return false;
+     }
+ 
++    /**
++     * Without a touchscreen the lock screen clock has no reliable way into the bouncer:
++     * MENU only collapses the panel and the bouncer follows when the collapse ends, a
++     * focused notification takes OK, and the arrows move the focus onto the notifications,
++     * where the digits are lost. Here MENU and OK open the bouncer (or dismiss an insecure
++     * keyguard, as MENU does) and the arrows open a secure one, before any child sees them.
++     * Once the bouncer shows, the arrows cannot take the focus out of it to the
++     * notifications, which stay focusable behind it.
++     */
++    private boolean interceptLockScreenKey(KeyEvent event) {
++        if (mService.getBarState() != StatusBarState.KEYGUARD
++                || getResources().getConfiguration().touchscreen
++                        != Configuration.TOUCHSCREEN_NOTOUCH) {
++            return false;
++        }
++        final int keyCode = event.getKeyCode();
++        final int direction;
++        switch (keyCode) {
++            case KeyEvent.KEYCODE_DPAD_UP: direction = View.FOCUS_UP; break;
++            case KeyEvent.KEYCODE_DPAD_DOWN: direction = View.FOCUS_DOWN; break;
++            case KeyEvent.KEYCODE_DPAD_LEFT: direction = View.FOCUS_LEFT; break;
++            case KeyEvent.KEYCODE_DPAD_RIGHT: direction = View.FOCUS_RIGHT; break;
++            default: direction = 0; break;
++        }
++        if (mService.isBouncerShowing()) {
++            if (direction == 0) {
++                return false;
++            }
++            final View host = findViewById(R.id.keyguard_host_view);
++            final View focused = findFocus();
++            if (host == null || focused == null || !isInside(focused, host)) {
++                return false;
++            }
++            final FocusFinder finder = FocusFinder.getInstance();
++            final View next = finder.findNextFocus(this, focused, direction);
++            if (next == null || isInside(next, host) || !(host instanceof ViewGroup)) {
++                return false;
++            }
++            // The notifications behind are nearer than, e.g., the emergency button at the
++            // bottom: move within the bouncer instead.
++            final View inside = finder.findNextFocus((ViewGroup) host, focused, direction);
++            if (inside != null && event.getAction() == KeyEvent.ACTION_DOWN) {
++                inside.requestFocus(direction);
++            }
++            return true;
++        }
++        final boolean open;
++        if (keyCode == KeyEvent.KEYCODE_MENU || KeyEvent.isConfirmKey(keyCode)) {
++            open = mService.shouldUnlockOnMenuPressed();
++        } else if (direction != 0) {
++            open = mService.isDeviceInteractive() && mService.isKeyguardCurrentlySecure();
++        } else {
++            return false;
++        }
++        if (!open) {
++            return false;
++        }
++        if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) {
++            mService.showBouncer(true /* scrimmed */);
++        }
++        return true;
++    }
++
++    private static boolean isInside(View view, View ancestor) {
++        for (View v = view; v != null; v = v.getParent() instanceof View
++                ? (View) v.getParent() : null) {
++            if (v == ancestor) {
++                return true;
++            }
++        }
++        return false;
++    }
++
+     public void setTouchActive(boolean touchActive) {
+         mTouchActive = touchActive;
+     }
+-- 
+2.39.5
+
