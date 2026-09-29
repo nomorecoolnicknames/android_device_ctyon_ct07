@@ -25,7 +25,8 @@ lunch lineage_ct07-userdebug && mka bacon
 ```
 
 The kernel in prebuilt/kernel is built from
-https://github.com/nomorecoolnicknames/android_kernel_ctyon_ct07 (android-3.18).
+https://github.com/nomorecoolnicknames/android_kernel_ctyon_ct07 (android-3.18)
+with ct07_go_defconfig.
 
 # Acknowledgements
 
